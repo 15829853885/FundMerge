@@ -1,0 +1,76 @@
+{
+  "name": "fund-ledger",
+  "version": "4.9.1",
+  "description": "资金台账 — 多公司现金与银行账户资金管理（集团合并）",
+  "author": "小刘",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "verify:pack": "node deliverables/pack-scan.js",
+    "dist": "electron-builder --win --x64 && node deliverables/pack-scan.js --quarantine"
+  },
+  "devDependencies": {
+    "electron": "^45.1.0",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "com.fundmerge.app",
+    "productName": "合资金账",
+    "copyright": "Copyright © 2026",
+    "asar": true,
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "index.html",
+      "assets/**/*",
+      "electron/**/*",
+      "!**/*.map",
+      "!**/*.md"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "FundMerge-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "合资金账",
+      "deleteAppDataOnUninstall": false,
+      "installerLanguages": [
+        "zh_CN"
+      ],
+      "language": "2052",
+      "unicode": true,
+      "runAfterFinish": true,
+      "uninstallDisplayName": "合资金账 FundMerge",
+      "include": "build/installer.nsh"
+    },
+    "extraFiles": [
+      {
+        "from": "assets/manual.html",
+        "to": "操作手册.html"
+      },
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      }
+    ]
+  },
+  "productName": "合资金账"
+}
