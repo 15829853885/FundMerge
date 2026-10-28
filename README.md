@@ -128,16 +128,19 @@
 ## 目录结构
 
 ```
-release/
+FundMerge-4.9.2-交付/
 ├── README.md                     本文件
 ├── 收尾交付说明.md                交付范围 / 边界 / 缺口 / 待你执行事项
 ├── 01-安装版/
 │   └── FundMerge-Setup-4.9.2.exe
 ├── 02-免安装版/
-│   └── FundMerge-4.9.2-portable/ 解压即用
+│   ├── FundMerge-4.9.2-portable/ 解压即用（77 个文件）
+│   ├── FundMerge-4.9.2-portable.zip
+│   └── 使用说明.txt
 ├── 03-网页版/
 │   ├── index.html
-│   └── assets/
+│   ├── assets/
+│   └── 使用说明.txt
 └── 04-文档/
     ├── 操作手册.html              D3
     ├── 需求解读与实施方案.md        D1
