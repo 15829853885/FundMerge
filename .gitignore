@@ -1,0 +1,31 @@
+# ---- 系统与编辑器 ----
+Thumbs.db
+desktop.ini
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# ---- 运行时数据：绝对不能进仓库 ----
+# 账本数据、附件、回滚快照、本地备份索引
+**/data/
+**/data/*.json
+**/*.bak.json
+**/*.rollback-*
+**/backup-index.json
+**/*.flpack
+**/*.attest.json
+**/debug.log
+**/data-location.txt
+
+# ---- 免安装版的解包目录：仓库里只留 zip ----
+# 358MB / 77 个文件，逐个入库没有意义；解压即可得
+02-免安装版/FundMerge-4.9.2-portable/
+
+# ---- 构建中间产物 ----
+node_modules/
+dist/
+release/
+out/
+*.tmp
+*.log
