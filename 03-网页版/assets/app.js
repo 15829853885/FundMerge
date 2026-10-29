@@ -212,7 +212,8 @@ function renderView() {
     case 'settings': html = viewSettings(); if (DESKTOP && window.desktop.flpack && !UI.packAuto) { window.desktop.flpack.autoStatus().then(s => { UI.packAuto = s; renderView(); }); } break;
     default: html = viewDashboard();
   }
-  if (window.Scene3D) Scene3D.dispose();
+  /* 不在这里销毁 3D：Scene3D.mount 会复用缓存里的 canvas，
+     每次销毁重建等于每切一次页面就重编译一遍着色器。 */
   root.innerHTML = html;
   /* 首次使用：内置管理员尚未设置口令 */
   const pending = DB.users.find(u => u.builtin && u.mustSetPassword);
@@ -292,6 +293,7 @@ async function refreshFileStats(manual) {
 /* 页面切换入场动效：只在「视图/公司」真正变化时触发，数据刷新不重放 */
 let lastViewKey = '';
 function animateView(root) {
+  if (perfLow()) return;                 /* 流畅模式不做入场动画，省掉一次强制重排 */
   const key = UI.view + '|' + (COMPANY ? COMPANY.id : '');
   if (key === lastViewKey) return;
   lastViewKey = key;
@@ -696,9 +698,47 @@ function setMotionSpeed(s) {
   toast('动效速度：' + ({ slow: '慢', normal: '标准', fast: '快' }[s] || '标准'), 'ok');
 }
 
+/* ---------- 流畅模式（性能档位） ----------
+   背景：装饰性动效（3D 氛围层、入场淡入、悬停阴影）在显卡合成不可用时会被迫走软件渲染，
+   表现为「动一下卡一下」。这里做三档：
+     auto   跟随系统：显卡合成不可用 → 自动流畅
+     smooth 强制流畅：关 3D、关入场动画、关悬停位移
+     rich   强制精细：全部开启
+   注意与「动效开关」的区别：动效开关是审美选择，流畅模式是性能兜底。 */
+const perfMode = () => localStorage.getItem('fm-perf') || 'auto';
+const gpuHardware = () => document.documentElement.getAttribute('data-gpu') !== 'soft';
+function perfLow() {
+  const m = perfMode();
+  if (m === 'smooth') return true;
+  if (m === 'rich') return false;
+  return !gpuHardware();
+}
+function applyPerf() {
+  document.documentElement.setAttribute('data-perf', perfLow() ? 'low' : 'high');
+}
+function setPerfMode(m) {
+  localStorage.setItem('fm-perf', m);
+  applyPerf();
+  if (window.Scene3D && Scene3D.reset) Scene3D.reset();
+  renderView();
+  toast('界面档位：' + ({ auto: '自动', smooth: '流畅优先', rich: '效果优先' }[m] || '自动'), 'ok');
+}
+/* 桌面版问主进程要显卡状态；网页版无从得知，按硬件加速可用处理 */
+async function detectGpu() {
+  let hw = true;
+  if (DESKTOP && window.desktop && window.desktop.gpu) {
+    try {
+      const r = await window.desktop.gpu();
+      hw = !!(r && r.hardware);
+    } catch (e) { hw = true; }
+  }
+  document.documentElement.setAttribute('data-gpu', hw ? 'hw' : 'soft');
+  applyPerf();
+}
+
 /* 数字滚动：只播一次，不循环 */
 function runCounters(root) {
-  if (!root || !motionOn()) return;
+  if (!root || !motionOn() || perfLow()) return;
   const scale = motionScale();
   root.querySelectorAll('[data-count]').forEach(el => {
     const to = num(el.dataset.count);
@@ -984,6 +1024,25 @@ document.addEventListener('click', async e => {
       break;
     }
     case 'new-company': openCompanyModal(); break;
+    /* 集团总公司实体（REQ-03 补完）：集团自身也是一家公司 */
+    case 'new-group-company': openGroupCompanyModal(); break;
+    case 'pick-group-company': openGroupPickModal(); break;
+    case 'group-ledger': {
+      if (!switchCompany(id)) break;
+      UI.view = 'dashboard';
+      closePopover();
+      renderShell();
+      toast('已进入「' + COMPANY.name + '」账本', 'ok');
+      break;
+    }
+    case 'group-profile': {
+      if (!switchCompany(id)) break;
+      UI.view = 'profile';
+      closePopover();
+      renderShell();
+      toast('这是集团公司的档案，可登记注册信息与银行账号', 'ok');
+      break;
+    }
     case 'edit-company': openCompanyModal(id); break;
     case 'del-company': {
       const c = coById(id);
@@ -1721,6 +1780,7 @@ document.addEventListener('click', async e => {
       break;
     }
     case 'set-motion-speed': setMotionSpeed(el.dataset.speed); break;
+    case 'set-perf': setPerfMode(el.dataset.mode || 'auto'); break;
     case 'set-parent-mode': {
       const mode = el.dataset.mode === 'registry' ? 'registry' : 'company';
       if (DB.meta.parentMode === mode) break;
@@ -1977,8 +2037,10 @@ bindDonutHover();
 
 (async function boot() {
   applyMotion();
+  applyPerf();          /* 先按上次结论定档，避免首屏用错档位闪一下 */
   applyTheme();
   await loadDB();
+  await detectGpu();    /* 再问主进程要真实显卡状态，必要时降档 */
 
   if (DESKTOP) {
     try { APP_INFO = await window.desktop.info(); } catch (e) { console.error(e); }
