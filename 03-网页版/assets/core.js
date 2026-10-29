@@ -5,7 +5,7 @@
 
 'use strict';
 
-const APP_VERSION = '5.0.0';
+const APP_VERSION = '5.0.1';
 const APP_NAME = '合资金账';
 const APP_NAME_EN = 'FundMerge';
 const STORE_KEY = 'fund-ledger-v2';

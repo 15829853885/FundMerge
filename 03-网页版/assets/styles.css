@@ -1066,11 +1066,15 @@ tr:hover .row-actions { opacity: 1; }
    动效与氛围
    ========================================================================== */
 
-.main { position: relative; isolation: isolate; }
-.main::before {
-  content: ""; position: fixed; z-index: -1; pointer-events: none;
-  top: -240px; right: -180px; width: 680px; height: 680px; border-radius: 50%;
-  background: radial-gradient(circle, rgba(99, 102, 241, .10), rgba(99, 102, 241, 0) 66%);
+/* 装饰光晕：直接用 .main 的背景图层画。
+   历史演变：最初是 position:fixed 的伪元素（滚动时会被反复重绘），
+   中间试过 absolute（会撑出 168px 横向滚动条）。
+   背景图既不产生溢出，也不单独占一个图层，是最省的做法。 */
+.main {
+  position: relative; isolation: isolate;
+  background-image: radial-gradient(680px 680px at calc(100% + 180px) -240px,
+                    rgba(99, 102, 241, .10), rgba(99, 102, 241, 0) 66%);
+  background-repeat: no-repeat;
 }
 
 /* 卡片与统计卡：轻微抬升 */
@@ -1465,7 +1469,9 @@ html[data-motion="off"] *::after {
   to   { opacity: 1; transform: none; }
 }
 .content.is-entering > * {
-  animation: viewEnter var(--dur-3) var(--ease) both;
+  /* 用 backwards 而不是 both：both 会让元素在动画结束后仍保持“动画生效”状态，
+     合成层无法回收；backwards 只在延迟期间预置首帧，结束后回归自然样式。 */
+  animation: viewEnter var(--dur-3) var(--ease) backwards;
 }
 .content.is-entering > *:nth-child(1) { animation-delay: 0ms; }
 .content.is-entering > *:nth-child(2) { animation-delay: 40ms; }
@@ -1488,15 +1494,16 @@ html[data-motion="off"] *::after {
   from { opacity: 0; transform: translateY(4px); }
   to   { opacity: 1; transform: none; }
 }
-.content.is-entering table.tbl tbody tr {
-  animation: rowIn calc(220ms * var(--motion-scale)) var(--ease) both;
+/* 只让前 8 行参与入场，再多就是纯负担：每行动画都会独立成一个合成层 */
+.content.is-entering table.tbl tbody tr:nth-child(-n+8) {
+  animation: rowIn calc(200ms * var(--motion-scale)) var(--ease) backwards;
 }
 .content.is-entering table.tbl tbody tr:nth-child(1) { animation-delay: 20ms; }
-.content.is-entering table.tbl tbody tr:nth-child(2) { animation-delay: 40ms; }
-.content.is-entering table.tbl tbody tr:nth-child(3) { animation-delay: 60ms; }
-.content.is-entering table.tbl tbody tr:nth-child(4) { animation-delay: 80ms; }
-.content.is-entering table.tbl tbody tr:nth-child(5) { animation-delay: 100ms; }
-.content.is-entering table.tbl tbody tr:nth-child(n+6) { animation-delay: 115ms; }
+.content.is-entering table.tbl tbody tr:nth-child(2) { animation-delay: 38ms; }
+.content.is-entering table.tbl tbody tr:nth-child(3) { animation-delay: 56ms; }
+.content.is-entering table.tbl tbody tr:nth-child(4) { animation-delay: 72ms; }
+.content.is-entering table.tbl tbody tr:nth-child(5) { animation-delay: 86ms; }
+.content.is-entering table.tbl tbody tr:nth-child(n+6) { animation-delay: 96ms; }
 
 /* 图表入场：一次性 */
 @keyframes chartIn {
@@ -1749,8 +1756,12 @@ table.tbl tbody tr:last-child td { border-bottom: 0; }
   box-shadow: var(--sh-xs), 0 0 0 1px color-mix(in srgb, var(--brand) 22%, transparent);
 }
 
-/* ---------- 顶部栏：轻微毛玻璃 ---------- */
-.topbar { backdrop-filter: saturate(1.1); }
+/* ---------- 顶部栏 ----------
+   早期这里挂了 backdrop-filter: saturate(1.1)。
+   它会让浏览器在每个滚动帧回读并重新合成背景（软件渲染下更贵），
+   而 1.1 的饱和度提升肉眼几乎不可见，性价比极低，已移除。
+   需要与内容分层时用底边线即可。 */
+.topbar { box-shadow: 0 1px 0 color-mix(in srgb, var(--line) 70%, transparent); }
 
 /* ---------- 金额与数字：等宽数字更整齐 ---------- */
 .cell-amount, .num, .stat-value { font-variant-numeric: tabular-nums; }
@@ -1810,3 +1821,54 @@ table.tbl tbody tr:last-child td { border-bottom: 0; }
 .dseg { transition: stroke-width .16s ease, opacity .16s ease; cursor: pointer; }
 .dseg:hover { stroke-width: 27; }
 .donut-wrap:has(.dseg:hover) .dseg:not(:hover) { opacity: .3; }
+
+/* ==========================================================================
+   流畅模式（data-perf="low"）
+   --------------------------------------------------------------------------
+   触发条件：显卡合成不可用（虚拟机 / 远程桌面 / 坏驱动），或用户在设置里手动选择。
+   目标：去掉一切「每帧都要重算」的东西，只保留必要反馈。
+   ========================================================================== */
+html[data-perf="low"] .main { background-image: none; }          /* 装饰光晕 */
+html[data-perf="low"] .scene-canvas { display: none !important; } /* 3D 氛围层 */
+
+/* 入场动画整体关闭：切页面立即呈现，不再有淡入与位移 */
+html[data-perf="low"] .content.is-entering > *,
+html[data-perf="low"] .content.is-entering table.tbl tbody tr,
+html[data-perf="low"] .content.is-entering .chart svg,
+html[data-perf="low"] .content.is-entering .cf-table {
+  animation: none !important;
+}
+
+/* 悬停不再位移与加阴影：box-shadow 变化会触发整块重绘 */
+html[data-perf="low"] .stat:hover,
+html[data-perf="low"] .card.hover:hover,
+html[data-perf="low"] .co-card:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: var(--line);
+}
+html[data-perf="low"] .stat,
+html[data-perf="low"] .card.hover,
+html[data-perf="low"] .co-card {
+  transition: none;
+}
+html[data-perf="low"] .insight-go { transition: none; opacity: 1; transform: none; }
+
+/* 按钮与输入只保留颜色变化，去掉缩放 */
+html[data-perf="low"] .btn,
+html[data-perf="low"] .btn:active:not(:disabled) { transform: none; transition: background .1s, color .1s, border-color .1s; }
+
+/* 弹窗与提示不做缩放回弹，只做极短淡入 */
+html[data-perf="low"] .modal { animation: veilIn .12s linear backwards; }
+html[data-perf="low"] .modal-veil,
+html[data-perf="low"] .modal-backdrop { animation: none; }
+html[data-perf="low"] .toast { animation: none; }
+
+/* 环形图悬停放大也关掉（会触发 SVG 重绘） */
+html[data-perf="low"] .dseg { transition: none; }
+html[data-perf="low"] .dseg:hover { stroke-width: 18; }
+html[data-perf="low"] .donut-wrap:has(.dseg:hover) .dseg:not(:hover) { opacity: 1; }
+
+/* 侧边栏折叠改为瞬时 */
+html[data-perf="low"] .app,
+html[data-perf="low"] .sidebar { transition: none; }

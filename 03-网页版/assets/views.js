@@ -1486,13 +1486,39 @@ function viewSettings() {
       </div>
 
       <div class="setting-block">
-        <h4>集团总公司登记方式</h4>
-        <p>决定总公司是否作为独立公司参与集团合并。切换会影响集团总额、集团报表的口径。</p>
-        <div class="seg" style="width:auto;margin-bottom:10px">
-          <button class="seg-btn ${parentMode() === 'company' ? 'is-active' : ''}" data-action="set-parent-mode" data-mode="company">作为独立公司</button>
-          <button class="seg-btn ${parentMode() === 'registry' ? 'is-active' : ''}" data-action="set-parent-mode" data-mode="registry">仅集团登记主体</button>
-        </div>
-        <p style="font-size:12px;color:var(--muted-2)">当前：<b>${parentMode() === 'registry' ? '仅作集团登记主体（不参与核算）' : '作为独立公司参与核算'}</b></p>
+        <h4>集团总公司</h4>
+        <p>集团自身也是一家公司，可以独立登记注册信息、银行账号与证照。指定之后，集团总览与集团报表才能区分「总公司自身」与「含下属公司」。</p>
+        ${(() => {
+          const hq = groupHQ();
+          if (!hq) {
+            return `<div class="alert warn" style="margin-bottom:12px">${icon('alert', 15)}
+              <div><b>还没有集团公司。</b>下面两种方式二选一：新建一家代表集团的公司，或把某家现有公司指定为集团总公司。</div>
+            </div>
+            <div class="setting-actions" style="margin-top:0">
+              <button class="btn primary sm" data-action="new-group-company">${icon('plus', 14)} 创建集团公司</button>
+              <button class="btn secondary sm" data-action="pick-group-company">把现有公司设为集团公司</button>
+            </div>`;
+          }
+          return `<div class="summary-strip" style="padding:0 0 12px;gap:26px">
+              <div class="item"><span>集团公司</span><strong>${esc(hq.name)}</strong></div>
+              <div class="item"><span>账户</span><strong>${hq.accounts.length} 个</strong></div>
+              <div class="item"><span>登记方式</span><strong>${parentMode() === 'registry' ? '仅作登记主体' : '参与合并'}</strong></div>
+            </div>
+            <div class="setting-actions" style="margin-top:0;margin-bottom:14px">
+              <button class="btn primary sm" data-action="group-ledger" data-id="${hq.id}">进入集团账本</button>
+              <button class="btn secondary sm" data-action="group-profile" data-id="${hq.id}">编辑集团档案</button>
+              <button class="btn ghost sm" data-action="edit-company" data-id="${hq.id}">改公司信息</button>
+            </div>
+            <div class="seg" style="width:auto;margin-bottom:8px">
+              <button class="seg-btn ${parentMode() === 'company' ? 'is-active' : ''}" data-action="set-parent-mode" data-mode="company">作为独立公司参与合并</button>
+              <button class="seg-btn ${parentMode() === 'registry' ? 'is-active' : ''}" data-action="set-parent-mode" data-mode="registry">仅作集团登记主体</button>
+            </div>
+            <p style="font-size:12px;color:var(--muted-2);margin:0">
+              ${parentMode() === 'registry'
+                ? '当前：总公司的账户与流水仍然可以记，但<b>不计入</b>集团合并合计，避免集团内部资金重复计算。'
+                : '当前：总公司的账户与流水<b>计入</b>集团合并合计。'}
+            </p>`;
+        })()}
       </div>
 
       <div class="setting-block">
@@ -1525,6 +1551,19 @@ function viewSettings() {
             <button class="seg-btn ${motionSpeed() === 'fast' ? 'is-active' : ''}" data-action="set-motion-speed" data-speed="fast">快</button>
           </div>
         </div>
+      </div>
+
+      <div class="setting-block">
+        <h4>界面流畅度</h4>
+        <p>动效开关管的是「要不要动」，这里管的是「动起来会不会卡」。显卡加速不可用的机器（虚拟机、远程桌面、老驱动）建议用「流畅优先」。</p>
+        <div class="seg" style="width:auto;margin-bottom:10px">
+          <button class="seg-btn ${perfMode() === 'auto' ? 'is-active' : ''}" data-action="set-perf" data-mode="auto">自动</button>
+          <button class="seg-btn ${perfMode() === 'smooth' ? 'is-active' : ''}" data-action="set-perf" data-mode="smooth">流畅优先</button>
+          <button class="seg-btn ${perfMode() === 'rich' ? 'is-active' : ''}" data-action="set-perf" data-mode="rich">效果优先</button>
+        </div>
+        <p style="font-size:12px;color:var(--muted-2);margin:0">
+          当前：<b>${perfMode() === 'auto' ? (gpuHardware() ? '自动（已检测到显卡加速，使用完整效果）' : '自动（未检测到显卡加速，已降级为流畅模式）') : perfMode() === 'smooth' ? '流畅优先（已关闭 3D 氛围层与入场动画）' : '效果优先（全部开启）'}</b>
+        </p>
       </div>
 
       <div class="setting-block">
@@ -1769,6 +1808,7 @@ function viewGroupDashboard() {
       <p>${fmtDateCN(today)} · 共 ${cos.length} 家公司合并${hqExcluded ? '（不含总公司自身）' : ''}，账本相互独立</p>
     </div>
     <div style="display:flex;gap:8px">
+      ${groupHQ() ? `<button class="btn secondary" data-action="group-profile" data-id="${groupHQ().id}">${icon('folder', 14)} 集团档案</button>` : ''}
       ${isAdmin() ? `<button class="btn ghost" data-action="nav" data-view="settings">${icon('edit', 14)} ${DB.meta.groupName ? '改集团名称' : '给集团命名'}</button>` : ''}
       ${isAdmin() ? `<button class="btn secondary" data-action="new-company">${icon('plus', 15)} 新建公司</button>` : ''}
       <button class="btn secondary" data-action="new-transfer">${icon('transfer', 15)} 公司间转账</button>
@@ -2080,11 +2120,48 @@ function viewCompanies() {
     };
   });
   /* 合计口径与集团报表保持一致：registry 模式下排除总公司自身 */
-  const hqEx = !!(groupHQ() && parentMode() === 'registry');
+  const hqCo = groupHQ();
+  const hqEx = !!(hqCo && parentMode() === 'registry');
   const sumRows = hqEx ? rows.filter(r => !r.co.isParent) : rows;
   const sumOf = k => fmtPlain(sumRows.reduce((s, r) => s + (k === 'total' || k === 'cash' || k === 'bank' ? r.t[k] : r[k]), 0));
 
+  const hqBlock = hqCo
+    ? `<div class="card mb-14">
+        <div class="card-hd">
+          <div>
+            <div class="card-title">集团总公司 · 自身账本</div>
+            <div class="card-sub">${esc(hqCo.name)} · ${parentMode() === 'registry' ? '仅作集团登记主体，<b>不计入</b>下方合计' : '作为独立公司，<b>计入</b>下方合计'}</div>
+          </div>
+          <div class="card-actions">
+            <button class="btn primary sm" data-action="group-profile" data-id="${hqCo.id}">集团档案</button>
+            <button class="btn secondary sm" data-action="group-ledger" data-id="${hqCo.id}">进入账本</button>
+            ${isAdmin() ? `<button class="btn ghost sm" data-action="edit-company" data-id="${hqCo.id}">改公司信息</button>` : ''}
+          </div>
+        </div>
+        <div class="card-bd">
+          <div class="summary-strip" style="padding:0;gap:26px">
+            <div class="item"><span>账户</span><strong>${hqCo.accounts.length} 个</strong></div>
+            <div class="item"><span>流水</span><strong>${hqCo.transactions.length} 笔</strong></div>
+            <div class="item"><span>档案字段</span><strong>${(hqCo.profile && hqCo.profile.fields ? hqCo.profile.fields.length : 0)} 条</strong></div>
+            <div class="item"><span>附件</span><strong>${(hqCo.profile && hqCo.profile.files ? hqCo.profile.files.length : 0)} 个</strong></div>
+          </div>
+        </div>
+      </div>`
+    : `<div class="card mb-14">
+        <div class="card-hd">
+          <div>
+            <div class="card-title">集团总公司</div>
+            <div class="card-sub">还没有指定集团公司。集团自身也是一家公司，指定后才能登记它的注册信息、银行账号与证照。</div>
+          </div>
+          ${isAdmin() ? `<div class="card-actions">
+            <button class="btn primary sm" data-action="new-group-company">${icon('plus', 14)} 创建集团公司</button>
+            <button class="btn secondary sm" data-action="pick-group-company">指定现有公司</button>
+          </div>` : ''}
+        </div>
+      </div>`;
+
   return `
+  ${hqBlock}
   <div class="card">
     <div class="card-hd">
       <div><div class="card-title">公司列表</div><div class="card-sub">每家公司的账户、流水、往来与预算完全独立，集团视图只做合并汇总</div></div>
@@ -2184,8 +2261,8 @@ function viewProfile() {
   return `
   <div class="page-hero">
     <div>
-      <h2>公司档案</h2>
-      <p>${esc(COMPANY.name)} 的注册资料、银行与税务账号、归档文件，全部保存在本机</p>
+      <h2>公司档案${COMPANY.isParent ? ' <span class="pill move" style="vertical-align:middle">集团总公司</span>' : ''}</h2>
+      <p>${esc(COMPANY.name)} 的注册资料、银行与税务账号、归档文件，全部保存在本机${COMPANY.isParent ? '。这份档案同时也代表集团本身' : ''}</p>
     </div>
     <div style="display:flex;gap:8px">
       <button class="btn secondary" data-action="vault-add">${icon('plus', 15)} 添加账号条目</button>

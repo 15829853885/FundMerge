@@ -2939,3 +2939,120 @@ function openVaultBundleModal() {
     });
   });
 }
+
+/* ------------------------------ 集团总公司实体 ------------------------------ */
+
+/* 集团要「作为独立公司」登记，前提是库里真的有一家公司代表集团。
+   早期版本只能靠公司编辑弹窗里一个不显眼的勾选框设置，用户根本找不到入口，
+   于是出现「选了模式但看不到集团公司」的困惑。这里给出显式入口。 */
+
+function openGroupCompanyModal() {
+  if (!isAdmin()) return toast('只有管理员可以创建集团公司', 'err');
+  const exists = groupHQ();
+  if (exists) return toast(`已经指定「${exists.name}」为集团总公司`, 'err');
+
+  const defName = DB.meta.groupName ? `${DB.meta.groupName}（集团）` : '集团公司';
+
+  openModal(modalShell({
+    title: '创建集团公司',
+    sub: '集团自身也是一家公司，可独立维护档案、账户与流水',
+    cls: 'slim',
+    body: `<form id="group-co-form">
+      <div class="modal-bd">
+        <div class="alert info" style="margin-bottom:14px">${icon('info', 15)}
+          <div>创建后这家公司就是「集团总公司」。它是否计入集团合并，由「设置 → 集团总公司登记方式」控制，随时可改。</div>
+        </div>
+        <div class="form-grid">
+          <label class="field span-2"><span class="lbl">公司名称</span>
+            <input type="text" name="name" value="${esc(defName)}" required maxlength="40" placeholder="例如：Mensah Group"></label>
+          <label class="field"><span class="lbl">简称</span>
+            <input type="text" name="shortName" maxlength="12" placeholder="可选"></label>
+          <label class="field"><span class="lbl">税号 / 注册号</span>
+            <input type="text" name="taxNo" maxlength="40" placeholder="可选"></label>
+          <label class="field span-2"><span class="lbl">备注</span>
+            <input type="text" name="note" maxlength="60" placeholder="可选"></label>
+          <label class="switch span-2"><input type="checkbox" name="syncGroup" checked><span class="track"></span>
+            <span>同时把集团名称设为该公司名称</span></label>
+        </div>
+        <div class="hint" style="margin-top:10px">创建后直接进入「公司档案」，可以补地址、联系方式、银行账号与证照附件。</div>
+      </div>
+      <div class="modal-ft"><div class="spacer"></div>
+        <button type="button" class="btn secondary" data-action="close-modal">取消</button>
+        <button type="submit" class="btn primary">创建并进入档案</button>
+      </div>
+    </form>`
+  }));
+
+  $('#group-co-form').addEventListener('submit', e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const name = String(fd.get('name') || '').trim();
+    if (!name) return toast('请填写公司名称', 'err');
+    if (DB.companies.some(c => c.name === name)) return toast('已有同名公司，请换一个名称', 'err');
+
+    const co = newCompany(name, DB.companies.length);
+    co.shortName = String(fd.get('shortName') || '').trim();
+    co.taxNo = String(fd.get('taxNo') || '').trim();
+    co.note = String(fd.get('note') || '').trim();
+    co.isParent = true;
+    DB.companies.forEach(c => { if (c.id !== co.id) c.isParent = false; });
+    DB.companies.push(co);
+    if (fd.get('syncGroup') === 'on') DB.meta.groupName = name;
+
+    logAction('新增', { module: '公司', target: '集团公司 ' + name, targetId: co.id, after: '设为集团总公司' });
+    switchCompany(co.id);
+    saveDB();
+    closeModal();
+    UI.view = 'profile';
+    renderShell();
+    toast(`已创建「${name}」，可以在这里登记集团资料`, 'ok');
+  });
+}
+
+/* 把已有公司指定为集团总公司 */
+function openGroupPickModal() {
+  if (!isAdmin()) return toast('只有管理员可以指定集团公司', 'err');
+  const list = DB.companies.filter(c => !c.isParent);
+  if (!list.length) return toast('没有可指定的公司，先新建一家', 'err');
+
+  openModal(modalShell({
+    title: '指定集团公司',
+    sub: '选一家现有公司作为集团总公司，其账本数据不变',
+    cls: 'slim',
+    body: `<form id="group-pick-form">
+      <div class="modal-bd">
+        <div class="alert warn" style="margin-bottom:14px">${icon('alert', 15)}
+          <div>若这家公司平时已经在记账，指定后它的数据仍归它自己，只是多了「集团总公司」身份。</div>
+        </div>
+        <div class="field">
+          <span class="lbl">选择公司</span>
+          <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
+            ${list.map((c, i) => `<label class="switch" style="padding:8px 10px;border:1px solid var(--line);border-radius:10px">
+              <input type="radio" name="coId" value="${c.id}" ${i === 0 ? 'checked' : ''}>
+              <span class="track"></span>
+              <span>${esc(c.name)}<span style="color:var(--muted-2);font-size:11.5px"> · ${c.accounts.length} 账户</span></span>
+            </label>`).join('')}
+          </div>
+        </div>
+        <label class="switch" style="margin-top:12px"><input type="checkbox" name="syncGroup"><span class="track"></span>
+          <span>同时把集团名称设为该公司名称</span></label>
+      </div>
+      <div class="modal-ft"><div class="spacer"></div>
+        <button type="button" class="btn secondary" data-action="close-modal">取消</button>
+        <button type="submit" class="btn primary">指定为集团公司</button>
+      </div>
+    </form>`
+  }));
+
+  $('#group-pick-form').addEventListener('submit', e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const co = coById(String(fd.get('coId') || ''));
+    if (!co) return toast('请选择一家公司', 'err');
+    DB.companies.forEach(c => { c.isParent = c.id === co.id; });
+    if (fd.get('syncGroup') === 'on') DB.meta.groupName = co.name;
+    logAction('修改', { module: '公司', target: '集团公司 ' + co.name, targetId: co.id, after: '指定为集团总公司' });
+    saveDB(); closeModal(); renderView();
+    toast(`已指定「${co.name}」为集团总公司`, 'ok');
+  });
+}
