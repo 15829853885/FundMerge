@@ -185,7 +185,24 @@ function renderView() {
     case 'advances': html = viewAdvances(); break;
     case 'invoices': html = viewInvoices(); break;
     case 'projects': html = viewProjects(); break;
-    case 'backup': html = viewBackup(); loadBackupCfg(); if (DESKTOP && window.desktop.backup && window.desktop.backup.versions) { window.desktop.backup.versions().then(list => { UI.backupVersions = list; renderView(); }); } break;
+    case 'backup':
+      html = viewBackup();
+      loadBackupCfg();
+      /* 只取一次版本列表，且只刷新表格、不整页重绘。
+         旧写法 versions().then(renderView) 会形成「渲染 → 取数 → 再渲染」的无限循环，
+         进页面即把主线程打满，表现就是整页卡死、点哪都没反应。 */
+      if (DESKTOP && window.desktop.backup && window.desktop.backup.versions && !UI.backupVerLoading) {
+        UI.backupVerLoading = true;
+        window.desktop.backup.versions()
+          .then(list => { UI.backupVersions = list; })
+          .catch(() => { /* 读不到就保持空列表，不阻断页面 */ })
+          .finally(() => {
+            UI.backupVerLoading = false;
+            UI.backupVersionsLoaded = true;
+            if (UI.view === 'backup') refreshBackupVersions();
+          });
+      }
+      break;
     case 'drill': html = viewDrill(); break;
     case 'accounts': html = viewAccounts(); break;
     case 'categories': html = viewCategories(); break;
@@ -207,6 +224,19 @@ function renderView() {
   }
 
   if (window.Scene3D) Scene3D.mount(root);
+
+  /* 缺汇率提示（REQ-22）：绝不按 1:1 静默折算，必须让用户看见 */
+  try {
+    const miss = (typeof missingRateCurrencies === 'function') ? missingRateCurrencies() : [];
+    if (miss.length) {
+      const bar = document.createElement('div');
+      bar.className = 'alert warn no-print';
+      bar.style.margin = '0 0 12px';
+      bar.innerHTML = `${icon('alert', 15)}<div>有 ${miss.length} 种外币缺少汇率（${miss.join('、')}），这些账户的金额<b>未计入</b>汇总。` +
+        `<button class="btn sm secondary" data-action="nav" data-view="settings" style="margin-left:10px">去录入汇率</button></div>`;
+      root.prepend(bar);
+    }
+  } catch (e) { /* 提示失败不影响主流程 */ }
 
   const meta = VIEW_META[UI.view] || ['', ''];
   const titleEl = $('#page-title'), subEl = $('#page-sub');
@@ -1288,26 +1318,129 @@ document.addEventListener('click', async e => {
     case 'save-currency': {
       const cur = $('#currency-select').value;
       if (!CURRENCIES[cur]) return toast('不支持的货币', 'err');
+      if (cur !== baseCurrency() && (DB.meta.fx && Object.keys(DB.meta.fx.rates || {}).length)) {
+        const go = () => {
+          DB.meta.fx = DB.meta.fx || { base: cur, rates: {} };
+          DB.meta.fx.base = cur;
+          DB.meta.currency = cur;
+          CURRENCY = cur;
+          saveDB(); renderView();
+          toast('本位币已切换为 ' + CURRENCIES[cur].name, 'ok');
+        };
+        return confirmDialog({
+          title: '切换本位币',
+          message: `本位币将从 <b>${CURRENCIES[baseCurrency()].name}</b> 改为 <b>${CURRENCIES[cur].name}</b>。<br>已有汇率的折算方向会反过来，建议切换后重新核对汇率。`,
+          confirmText: '确认切换',
+          requireCode: true,
+          onConfirm: go
+        });
+      }
+      DB.meta.fx = DB.meta.fx || { base: cur, rates: {} };
+      DB.meta.fx.base = cur;
       DB.meta.currency = cur;
       CURRENCY = cur;
       saveDB(); renderView();
-      toast('货币已切换为 ' + CURRENCIES[cur].name, 'ok');
+      toast('本位币已切换为 ' + CURRENCIES[cur].name, 'ok');
       break;
     }
+    case 'fx-add': openFxModal(el.dataset.cur); break;
     case 'toggle-motion': setMotion(el.checked); break;
     case 'drill': UI.drillMetric = el.dataset.metric || 'total'; UI.view = 'drill'; renderView(); break;
     case 'drill-back': UI.view = 'group'; renderView(); break;
+    /* 趋势区间：快捷天数（REQ-04/09，此前这个 action 根本没有监听，按钮是死的） */
+    case 'trend-range': {
+      UI.trendDays = num(el.dataset.days);
+      UI.trendRange = {};
+      renderView();
+      break;
+    }
     case 'drill-open': {
       const co = coById(id);
       if (!co) break;
       DB.meta.activeCompanyId = co.id;
       COMPANY = co;
       saveDB();
+      /* 按来源指标预置流水筛选，否则进去看到的是全部流水，对不上数 */
+      const m = el.dataset.metric || UI.drillMetric || 'total';
+      const today = todayISO();
+      const thisM = monthOf(today);
+      const base = { from: '', to: '', account: '', type: '', category: '', keyword: '', page: 1 };
+      if (m === 'monthIn') UI.txFilter = Object.assign(base, { from: thisM + '-01', to: today, type: 'in' });
+      else if (m === 'monthOut') UI.txFilter = Object.assign(base, { from: thisM + '-01', to: today, type: 'out' });
+      else UI.txFilter = base;
       UI.view = 'transactions';
       renderView();
       toast('已进入 ' + co.name + ' 的资金流水', 'ok');
       break;
     }
+    /* 总览指标卡穿透：跳台账/流水并预置筛选（G-01） */
+    case 'stat-jump': {
+      const to = el.dataset.to;
+      if (to === 'debts') {
+        if (el.dataset.tab) UI.debtTab = el.dataset.tab;
+        UI.view = 'debts';
+      } else if (to === 'transactions') {
+        const today = todayISO();
+        UI.txFilter = { from: `${today.slice(0, 7)}-01`, to: today, account: '', type: '', category: '', keyword: '', page: 1 };
+        UI.view = 'transactions';
+      }
+      renderView();
+      break;
+    }
+    /* 账户穿透：跳到流水并按该账户过滤（REQ-19） */
+    case 'acc-detail': {
+      const a = accById(id);
+      if (!a) break;
+      UI.txFilter = { from: '', to: '', account: a.id, type: '', category: '', keyword: '', page: 1 };
+      UI.view = 'transactions';
+      renderView();
+      toast('已按账户「' + a.name + '」筛选流水', 'ok');
+      break;
+    }
+    case 'acc-filter': UI.accType = el.dataset.type || ''; renderView(); break;
+    /* 台账筛选：清空 / 卡片快捷筛选 / 翻页（G-04） */
+    case 'f-clear': {
+      const st = ledgerState(el.dataset.f);
+      Object.assign(st, { from: '', to: '', status: '', kw: '', overdue: '', page: 1 });
+      renderView();
+      break;
+    }
+    case 'f-quick': {
+      const st = ledgerState(el.dataset.f);
+      Object.assign(st, { from: '', to: '', status: '', kw: '', overdue: '', page: 1 });
+      const k = el.dataset.k, v = el.dataset.v;
+      if (k === 'overdue') st.overdue = v;
+      else if (k !== '__all') st[k] = v;
+      renderView();
+      break;
+    }
+    case 'debt-page': ledgerState('debt').page = num(el.dataset.page); renderView(); break;
+    case 'advance-page': ledgerState('advance').page = num(el.dataset.page); renderView(); break;
+    case 'invoice-page': ledgerState('invoice').page = num(el.dataset.page); renderView(); break;
+    case 'inv-receive': openInvoiceReceiveModal(id); break;
+    case 'undo-advance': undoAdvanceDraw(id); break;
+    /* 资金对账单的组成项穿透（REQ-20） */
+    case 'fundstmt-go': {
+      const to = el.dataset.to, status = el.dataset.status || '';
+      if (to === 'invoices') {
+        Object.assign(ledgerState('invoice'), { from: '', to: '', status, kw: '', overdue: '', page: 1 });
+        UI.view = 'invoices';
+      } else if (to === 'debts') {
+        UI.debtTab = el.dataset.tab || 'borrow';
+        Object.assign(ledgerState('debt'), { from: '', to: '', status: '', kw: '', overdue: '', page: 1 });
+        UI.view = 'debts';
+      } else if (to === 'advances') {
+        Object.assign(ledgerState('advance'), { from: '', to: '', status, kw: '', overdue: '', page: 1 });
+        UI.view = 'advances';
+      }
+      renderView();
+      break;
+    }
+    case 'acc-filter-go': UI.accType = el.dataset.type || ''; UI.view = 'accounts'; renderView(); break;
+    case 'fundstmt-export': exportFundStatement(); break;
+    case 'vault-bundle': openVaultBundleModal(); break;
+    case 'log-note': openLogNoteModal(id); break;
+    case 'log-del': deleteLog(id); break;
     case 'backup-provider': {
       if (!DESKTOP) return;
       const p = el.dataset.p;
@@ -1347,6 +1480,7 @@ document.addEventListener('click', async e => {
     }
     case 'backup-test-dav': {
       if (!DESKTOP) return;
+      if (UI.backupBusy) return toast('正在测试，请稍候…', '');
       const hint = $('#dav-test-hint');
       const cfg = Object.assign({}, UI.backupCfg || {});
       cfg.webdav = Object.assign({}, cfg.webdav, {
@@ -1355,11 +1489,18 @@ document.addEventListener('click', async e => {
       });
       const pw = ($('#dav-pass') || {}).value || '';
       if (pw) cfg.webdav.password = pw;
-      if (hint) hint.textContent = '测试中…';
-      const r = await window.desktop.backup.test(cfg);
-      if (hint) {
-        hint.textContent = r.ok ? '连接成功' : '失败：' + r.error;
-        hint.style.color = r.ok ? 'var(--out)' : 'var(--danger)';
+      if (hint) { hint.textContent = '测试中…'; hint.style.color = ''; }
+      UI.backupBusy = true;
+      try {
+        const r = await window.desktop.backup.test(cfg);
+        if (hint) {
+          hint.textContent = r.ok ? '连接成功' : '失败：' + r.error;
+          hint.style.color = r.ok ? 'var(--out)' : 'var(--danger)';
+        }
+      } catch (e) {
+        if (hint) { hint.textContent = '失败：' + (e && e.message ? e.message : e); hint.style.color = 'var(--danger)'; }
+      } finally {
+        UI.backupBusy = false;
       }
       break;
     }
@@ -1443,7 +1584,8 @@ document.addEventListener('click', async e => {
           if (!r.ok) return toast('删除失败：' + r.error, 'err');
           logAction('删除', { module: '数据', target: '云盘版本 v' + no });
           UI.backupVersions = await window.desktop.backup.versions();
-          renderView();
+          UI.backupVersionsLoaded = true;
+          refreshBackupVersions();
           toast('已删除 v' + no, 'ok');
         }
       });
@@ -1683,17 +1825,7 @@ document.addEventListener('click', async e => {
       }
       break;
     case 'clear-all':
-      confirmDialog({
-        title: '清空全部数据',
-        requireCode: true,
-        message: '将删除<b>所有账户、流水、往来款与预算</b>，用户账号保留。此操作不可恢复，建议先导出备份。',
-        confirmText: '清空',
-        onConfirm: () => {
-          DB.accounts = []; DB.transactions = []; DB.debts = []; DB.settlements = []; DB.budgets = [];
-          saveDB(); closeModal(); render();
-          toast('数据已清空', 'ok');
-        }
-      });
+      openClearAllModal();
       break;
   }
 });
@@ -1703,6 +1835,8 @@ let txFilterTimer = null;
 document.addEventListener('input', e => {
   const f = e.target.closest('[data-filter]');
   if (f) {
+    /* 日期交给 change 事件统一校验，避免每敲一个数字就弹一次错 */
+    if (f.dataset.filter === 'from' || f.dataset.filter === 'to') return;
     UI.txFilter[f.dataset.filter] = f.value;
     UI.txFilter.page = 1;
     clearTimeout(txFilterTimer);
@@ -1716,7 +1850,13 @@ document.addEventListener('input', e => {
 document.addEventListener('change', e => {
   const f = e.target.closest('[data-filter]');
   if (f) {
-    UI.txFilter[f.dataset.filter] = e.target.value;
+    const key = f.dataset.filter;
+    if (key === 'from' || key === 'to') {
+      const nf = key === 'from' ? f.value : UI.txFilter.from;
+      const nt = key === 'to' ? f.value : UI.txFilter.to;
+      if (!checkDateRange(nf, nt)) { f.value = UI.txFilter[key] || ''; return; }
+    }
+    UI.txFilter[key] = e.target.value;
     UI.txFilter.page = 1;
     const area = $('#tx-area');
     if (area) area.innerHTML = txAreaHTML();
@@ -1725,6 +1865,9 @@ document.addEventListener('change', e => {
 
   const bm = e.target.closest('[data-budget-month]');
   if (bm) { UI.budgetMonth = bm.value; renderView(); return; }
+
+  const lsd = e.target.closest('[data-log-show-del]');
+  if (lsd) { UI.logShowDeleted = !!lsd.checked; UI.logPage = 1; renderView(); return; }
 
   const b = e.target.closest('[data-budget-cat]');
   if (b) {
@@ -1743,14 +1886,92 @@ document.addEventListener('change', e => {
   }
 
   const cf = e.target.closest('[data-cf]');
-  if (cf) { UI.cfRange[cf.dataset.cf] = cf.value; UI.cfPreset = ''; renderView(); return; }
+  if (cf) {
+    const key = cf.dataset.cf;
+    const nf = key === 'from' ? cf.value : UI.cfRange.from;
+    const nt = key === 'to' ? cf.value : UI.cfRange.to;
+    if (!checkDateRange(nf, nt)) { cf.value = UI.cfRange[key] || ''; return; }
+    UI.cfRange[key] = cf.value; UI.cfPreset = ''; renderView(); return;
+  }
 
   const st = e.target.closest('[data-stmt]');
   if (st) { UI.stmt[st.dataset.stmt] = st.value; renderView(); return; }
 
   const gr = e.target.closest('[data-group]');
-  if (gr) { UI.groupRange[gr.dataset.group] = gr.value; UI.groupPreset = ''; renderView(); return; }
+  if (gr) {
+    const key = gr.dataset.group;
+    const nf = key === 'from' ? gr.value : UI.groupRange.from;
+    const nt = key === 'to' ? gr.value : UI.groupRange.to;
+    if (!checkDateRange(nf, nt)) { gr.value = UI.groupRange[key] || ''; return; }
+    UI.groupRange[key] = gr.value; UI.groupPreset = ''; renderView(); return;
+  }
+
+  /* 趋势自定义日期范围 */
+  const td = e.target.closest('[data-trend]');
+  if (td) {
+    const r = UI.trendRange || (UI.trendRange = { from: '', to: '' });
+    const k = td.dataset.trend;
+    const nf = k === 'from' ? td.value : r.from;
+    const nt = k === 'to' ? td.value : r.to;
+    if (!checkDateRange(nf, nt)) { td.value = r[k] || ''; return; }
+    r[k] = td.value;
+    if (!r.from || !r.to) { /* 只填了一头就先存着，等另一头 */ }
+    renderView();
+    return;
+  }
+
+  /* 台账通用筛选（往来款 / 借支 / 票据） */
+  const lf = e.target.closest('[data-f]');
+  if (lf) {
+    const fkey = lf.dataset.f, fk = lf.dataset.k;
+    const st = ledgerState(fkey);
+    if (fk === 'from' || fk === 'to') {
+      const nf = fk === 'from' ? lf.value : st.from;
+      const nt = fk === 'to' ? lf.value : st.to;
+      if (!checkDateRange(nf, nt)) { lf.value = st[fk] || ''; return; }
+    }
+    st[fk] = lf.value;
+    st.page = 1;
+    if (fk === 'status') st.overdue = '';
+    renderView();
+    return;
+  }
+
+  /* 统计汇总页的日期筛选（此前没有监听，输入完全无效） */
+  const rp = e.target.closest('[data-report]');
+  if (rp) {
+    const key = rp.dataset.report;
+    const nf = key === 'from' ? rp.value : UI.reportRange.from;
+    const nt = key === 'to' ? rp.value : UI.reportRange.to;
+    if (!checkDateRange(nf, nt)) { rp.value = UI.reportRange[key] || ''; return; }
+    UI.reportRange[key] = rp.value; renderView(); return;
+  }
 });
+
+/* 环形图悬停：中心文字切换为该扇区的名称/金额/占比（REQ-10） */
+function bindDonutHover() {
+  document.addEventListener('mouseover', e => {
+    const seg = e.target.closest && e.target.closest('.dseg');
+    if (!seg) return;
+    const box = seg.closest('.donut-wrap');
+    if (!box) return;
+    const lbl = box.querySelector('.dcenter-label');
+    const val = box.querySelector('.dcenter-value');
+    if (lbl) lbl.textContent = seg.dataset.label || '';
+    if (val) val.textContent = `${seg.dataset.value || ''} · ${seg.dataset.pct || ''}%`;
+  });
+  document.addEventListener('mouseout', e => {
+    const seg = e.target.closest && e.target.closest('.dseg');
+    if (!seg) return;
+    const box = seg.closest('.donut-wrap');
+    if (!box) return;
+    const lbl = box.querySelector('.dcenter-label');
+    const val = box.querySelector('.dcenter-value');
+    if (lbl) lbl.textContent = lbl.dataset.def || '';
+    if (val) val.textContent = val.dataset.def || '';
+  });
+}
+bindDonutHover();
 
 /* ---------------------------------- 启动 ---------------------------------- */
 

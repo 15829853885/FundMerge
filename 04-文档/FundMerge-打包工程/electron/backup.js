@@ -154,14 +154,17 @@ async function webdavTest(cfg) {
 
   const res = await request(davBase(cfg) + '/', {
     method: 'PROPFIND',
-    headers: Object.assign({ Depth: '0', 'Content-Type': 'application/xml' }, auth)
+    headers: Object.assign({ Depth: '0', 'Content-Type': 'application/xml' }, auth),
+    timeout: 15000
   }, '<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>');
 
   if (res.status === 401) throw new Error('认证失败（401），请检查用户名与应用密码');
   if (res.status === 404) throw new Error('目录不存在（404）');
   if (res.status < 200 || res.status >= 300) throw new Error('连接失败，HTTP ' + res.status);
 
-  await request(davBase(cfg) + '/' + davFolder(cfg), { method: 'MKCOL', headers: auth });
+  /* MKCOL 失败不致命：目录已存在会返回 405，这里只保证不阻塞 */
+  await request(davBase(cfg) + '/' + davFolder(cfg), { method: 'MKCOL', headers: auth, timeout: 15000 })
+    .catch(() => {});
   return { ok: true, status: res.status, folder: davFolder(cfg) };
 }
 

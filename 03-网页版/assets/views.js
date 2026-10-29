@@ -23,8 +23,74 @@ function emptyState({ ico = 'info', title, desc, actions = '' }) {
   </div>`;
 }
 
-function pager(total, page, size, action) {
-  const pages = Math.max(1, Math.ceil(total / size));
+/* 台账通用筛选栏（G-04）
+   key 用于 data-f 前缀（debt / advance / invoice），state 为该页的筛选状态对象 */
+function filterBar(key, fields, state) {
+  return `<div class="toolbar no-print" style="gap:10px;flex-wrap:wrap;margin-bottom:12px">
+    ${fields.map(f => {
+      const v = state[f.k] == null ? '' : state[f.k];
+      if (f.t === 'select') {
+        return `<label class="field" style="min-width:132px"><label>${f.label}</label>
+          <select data-f="${key}" data-k="${f.k}">${f.opts.map(o => `<option value="${o[0]}" ${String(o[0]) === String(v) ? 'selected' : ''}>${o[1]}</option>`).join('')}</select></label>`;
+      }
+      const w = f.t === 'date' ? 138 : 168;
+      return `<label class="field" style="min-width:${w}px"><label>${f.label}</label>
+        <input type="${f.t}" data-f="${key}" data-k="${f.k}" value="${esc(v)}" placeholder="${f.ph || ''}"></label>`;
+    }).join('')}
+    <div class="spacer"></div>
+    <button class="btn secondary sm" data-action="f-clear" data-f="${key}">${icon('rotate', 13)} 清空筛选</button>
+  </div>`;
+}
+
+/* 三台账的通用过滤：日期范围 + 状态 + 关键字 */
+function applyLedgerFilter(list, st, get) {
+  const from = st.from || '', to = st.to || '', kw = String(st.kw || '').trim().toLowerCase();
+  return list.filter(x => {
+    const g = get(x);
+    if (from && g.date && g.date < from) return false;
+    if (to && g.date && g.date > to) return false;
+    if (st.status && g.status !== st.status) return false;
+    if (st.overdue && !g.overdue) return false;
+    if (kw) {
+      const hay = `${g.text || ''}`.toLowerCase();
+      if (hay.indexOf(kw) < 0) return false;
+    }
+    return true;
+  });
+}
+
+/* 三台账筛选状态（debt / advance / invoice），视图与事件处理共用 */
+const LEDGER_FILTER_KEY = { debt: 'debtFilter', advance: 'advanceFilter', invoice: 'invoiceFilter' };
+function ledgerState(key) {
+  const name = LEDGER_FILTER_KEY[key] || 'debtFilter';
+  if (!UI[name]) UI[name] = { from: '', to: '', status: '', kw: '', overdue: '', page: 1 };
+  return UI[name];
+}
+
+/* 趋势区间（REQ-04/09）：快捷天数或自定义日期范围，两者互斥 */
+function trendWindow() {
+  const today = todayISO();
+  const r = UI.trendRange || {};
+  if (r.from && r.to) return { start: r.from, end: r.to, custom: true };
+  const d = UI.trendDays == null ? 30 : UI.trendDays;
+  return { start: d === 0 ? `${today.slice(0, 4)}-01-01` : addDays(today, -(d - 1)), end: today, custom: false };
+}
+
+function trendSegHTML() {
+  const r = UI.trendRange || {};
+  return [[7, '7天'], [30, '30天'], [90, '90天'], [0, '本年']].map(([n, l]) =>
+    `<button class="seg-btn ${!r.from && UI.trendDays === n ? 'is-active' : ''}" data-action="trend-range" data-days="${n}">${l}</button>`).join('');
+}
+
+function trendDateHTML() {
+  const r = UI.trendRange || {};
+  const st = 'width:118px;padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);font-size:12px';
+  return `<input type="date" data-trend="from" value="${esc(r.from || '')}" title="自定义开始日期" style="${st}">
+    <span style="color:var(--muted-2);font-size:12px">~</span>
+    <input type="date" data-trend="to" value="${esc(r.to || '')}" title="自定义结束日期" style="${st}">`;
+}
+
+function pager(total, page, size, action) {  const pages = Math.max(1, Math.ceil(total / size));
   const cur = Math.min(Math.max(1, page), pages);
   const from = total === 0 ? 0 : (cur - 1) * size + 1;
   const to = Math.min(total, cur * size);
@@ -133,14 +199,13 @@ function viewDashboard() {
     ? `较上月 ${diff >= 0 ? '+' : ''}${fmt(diff)}`
     : '上月无对比数据';
 
-  const end = today;
-  const start = UI.trendDays === 0 ? `${today.slice(0, 4)}-01-01` : addDays(end, -(UI.trendDays - 1));
+  const tw = trendWindow();
+  const start = tw.start;
+  const end = tw.end;
   const series = balanceSeries(start, end);
   const chg = round2(total - (series[0] ? series[0].value : 0));
 
-  const seg = [[30, '近30天'], [90, '近90天'], [0, '本年']].map(([d, l]) =>
-    `<button class="seg-btn ${UI.trendDays === d ? 'is-active' : ''}" data-action="trend-range" data-days="${d}">${l}</button>`
-  ).join('');
+  const seg = trendSegHTML();
 
   /* 支出构成（本月） */
   const outMap = new Map();
@@ -198,7 +263,7 @@ function viewDashboard() {
       <div class="stat-foot">${chg === 0 ? '与区间起点持平' : `较区间起点 ${chg > 0 ? '+' : ''}${fmt(chg)}`}</div>
     </div>
 
-    <div class="stat">
+    <div class="stat is-clickable" data-action="stat-jump" data-to="transactions" title="点击查看本月流水明细">
       <div class="stat-top">
         <span class="stat-label">本月净流入</span>
         <span class="stat-ico in">${icon('flow', 15)}</span>
@@ -207,7 +272,7 @@ function viewDashboard() {
       <div class="stat-foot">${netFoot}</div>
     </div>
 
-    <div class="stat">
+    <div class="stat is-clickable" data-action="stat-jump" data-to="debts" data-tab="lend" title="点击查看借出台账">
       <div class="stat-top">
         <span class="stat-label">应收（借出未收）</span>
         <span class="stat-ico warn">${icon('debt', 15)}</span>
@@ -216,7 +281,7 @@ function viewDashboard() {
       <div class="stat-foot">${lend.count} 笔未结清${lend.overdue > 0 ? ` · 逾期 ${fmt(lend.overdue)}` : ''}</div>
     </div>
 
-    <div class="stat">
+    <div class="stat is-clickable" data-action="stat-jump" data-to="debts" data-tab="borrow" title="点击查看借入台账">
       <div class="stat-top">
         <span class="stat-label">应付（借入 + 未报销）</span>
         <span class="stat-ico out">${icon('receipt', 15)}</span>
@@ -235,7 +300,7 @@ function viewDashboard() {
           <div class="card-title">资金余额趋势</div>
           <div class="card-sub">${start} 至 ${end} · 全部账户合计</div>
         </div>
-        <div class="seg">${seg}</div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><div class="seg" style="width:auto">${seg}</div>${trendDateHTML()}</div>
       </div>
       <div class="card-bd">${areaChart(series, { height: 250 })}</div>
     </div>
@@ -528,12 +593,24 @@ function txAreaHTML() {
 function viewDebts() {
   const tab = UI.debtTab;
   const types = ['lend', 'borrow', 'reimburse'];
-  const list = DB.debts.filter(d => d.type === tab).map(d => ({ d, info: debtInfo(d) }))
+  if (!UI.debtFilter) UI.debtFilter = { from: '', to: '', status: '', kw: '', page: 1 };
+  const fs = UI.debtFilter;
+
+  const all = DB.debts.filter(d => d.type === tab).map(d => ({ d, info: debtInfo(d) }))
     .sort((a, b) => {
       if (a.info.status === 'settled' && b.info.status !== 'settled') return 1;
       if (b.info.status === 'settled' && a.info.status !== 'settled') return -1;
       return (a.d.dueDate || '9999').localeCompare(b.d.dueDate || '9999');
     });
+  const filtered = applyLedgerFilter(all, fs, r => ({
+    date: r.d.date,
+    status: r.info.status,
+    overdue: r.info.overdue,
+    text: `${r.d.party} ${r.d.note || ''}`
+  }));
+  const PAGE = 15;
+  const page = Math.min(Math.max(1, fs.page || 1), Math.max(1, Math.ceil(filtered.length / PAGE)));
+  const list = filtered.slice((page - 1) * PAGE, page * PAGE);
 
   const t = DEBT_TYPE[tab];
   const tot = debtTotals(tab);
@@ -550,18 +627,25 @@ function viewDebts() {
   return `
   <div class="tabs">${tabsHTML}</div>
 
+  ${filterBar('debt', [
+    { k: 'from', t: 'date', label: '发生日期起' },
+    { k: 'to', t: 'date', label: '发生日期止' },
+    { k: 'status', t: 'select', label: '状态', opts: [['', '全部'], ['open', '未结清'], ['partial', '部分结清'], ['settled', '已结清']] },
+    { k: 'kw', t: 'text', label: '对方 / 备注', ph: '输入关键字' }
+  ], fs)}
+
   <div class="stat-grid mb-14" style="grid-template-columns:repeat(3,minmax(0,1fr))">
-    <div class="stat">
+    <div class="stat is-clickable" data-action="f-quick" data-f="debt" data-k="status" data-v="open" title="只看未结清">
       <div class="stat-top"><span class="stat-label">${t.label} · 未结清</span><span class="stat-ico warn">${icon('debt', 15)}</span></div>
       <div class="stat-value sm">${fmt(tot.remaining)}</div>
       <div class="stat-foot">${tot.count} 笔 · 原始金额 ${fmtShort(tot.total)}</div>
     </div>
-    <div class="stat">
+    <div class="stat is-clickable" data-action="f-quick" data-f="debt" data-k="overdue" data-v="1" title="只看逾期未结">
       <div class="stat-top"><span class="stat-label">逾期未结</span><span class="stat-ico in">${icon('alert', 15)}</span></div>
       <div class="stat-value sm" style="color:${tot.overdue > 0 ? 'var(--danger)' : ''}">${fmt(tot.overdue)}</div>
       <div class="stat-foot">超过约定结清日期的金额</div>
     </div>
-    <div class="stat">
+    <div class="stat is-clickable" data-action="f-quick" data-f="debt" data-k="__all" data-v="1" title="清空筛选，显示全部">
       <div class="stat-top"><span class="stat-label">全部往来净额</span><span class="stat-ico">${icon('flow', 15)}</span></div>
       <div class="stat-value sm">${fmt(round2(lendAll.remaining - payAll))}</div>
       <div class="stat-foot">应收 − 应付</div>
@@ -588,9 +672,10 @@ function viewDebts() {
               <div class="cell-main">${esc(d.party)}</div>
               <div class="cell-sub">${esc(d.note || '—')}</div>
             </td>
-            <td class="tr num">${fmtPlain(d.amount)}</td>
-            <td class="tr num" style="color:var(--muted)">${info.settled ? fmtPlain(info.settled) : '—'}</td>
-            <td class="tr cell-amount ${d.type === 'lend' ? 'in' : 'out'}">${info.remaining ? fmtPlain(info.remaining) : '—'}</td>
+            <td class="tr num">${fmtCur(d.amount, d.currency || baseCurrency())}
+              ${(d.currency || baseCurrency()) !== baseCurrency() ? `<div class="cell-sub">≈ ${fmt(toBase(d.amount, d.currency) ?? 0)}</div>` : ''}</td>
+            <td class="tr num" style="color:var(--muted)">${info.settled ? fmtCur(info.settled, d.currency || baseCurrency()) : '—'}</td>
+            <td class="tr cell-amount ${d.type === 'lend' ? 'in' : 'out'}">${info.remaining ? fmtCur(info.remaining, d.currency || baseCurrency()) : '—'}</td>
             <td class="num nowrap" style="color:var(--muted)">${d.date}</td>
             <td class="num nowrap" style="color:${info.overdue ? 'var(--danger)' : 'var(--muted)'}">${d.dueDate || '—'}</td>
             <td>${statusPill(info.status)}${info.overdue ? ' <span class="pill danger">逾期</span>' : ''}</td>
@@ -611,6 +696,7 @@ function viewDebts() {
           : '员工垫付但尚未报销的款项，记在这里，报销时自动生成支出。',
         actions: `<button class="btn primary" data-action="new-debt" data-type="${tab}">新增${t.label}</button>`
       })}
+      ${filtered.length > PAGE ? pager(filtered.length, page, PAGE, 'debt-page') : ''}
     </div>
   </div>`;
 }
@@ -741,16 +827,89 @@ function viewReports() {
   const tab = UI.reportTab;
   const tabs = [
     ['cashflow', '现金流量表'],
+    ['fundstmt', '资金对账单'],
     ['statement', '月末对账单'],
     ['summary', '统计汇总']
   ].map(([k, l]) => `<button class="tab ${tab === k ? 'is-active' : ''}" data-action="report-tab" data-tab="${k}">${l}</button>`).join('');
 
   let body = '';
   if (tab === 'cashflow') body = reportCashflow();
+  if (tab === 'fundstmt') body = reportFundStatement();
   if (tab === 'statement') body = reportStatement();
   if (tab === 'summary') body = reportSummary();
 
   return `<div class="tabs no-print">${tabs}</div>${body}`;
+}
+
+/* 资金对账单（REQ-20）
+   总账面金额 = 现金 + 银行 + 票据未回金额 + 借款（借入未还 + 员工未报销） + 借支备用金未核销
+   注意：借支发放时已生成支出流水、现金/银行里已经扣过，所以本表是「资金构成」而不是相加可花的钱。 */
+function reportFundStatement() {
+  const today = todayISO();
+  const cash = round2(DB.accounts.filter(a => a.type === 'cash').reduce((s, a) => s + balanceOf(a), 0));
+  const bank = round2(totalBalance() - cash);
+
+  const invs = ensureInvoiceList(COMPANY).filter(i => i.status !== 'done');
+  const invAmt = round2(invs.reduce((s, i) => s + Math.max(0, num(i.amount) - num(i.receivedAmount)), 0));
+
+  const borrow = round2(debtTotals('borrow').remaining + debtTotals('reimburse').remaining);
+  const borrowCnt = debtTotals('borrow').count + debtTotals('reimburse').count;
+
+  const advs = ensureAdvanceList(COMPANY).filter(a => advanceInfo(a).status === 'issued');
+  const advAmt = round2(advs.reduce((s, a) => s + advanceInfo(a).remain, 0));
+
+  const total = round2(cash + bank + invAmt + borrow + advAmt);
+
+  const row = (label, sub, amt, tone, action) => `<tr>
+    <td>
+      <div class="cell-main">${label}</div>
+      <div class="cell-sub">${sub}</div>
+    </td>
+    <td class="tr cell-amount ${tone || ''}">${fmtPlain(amt)}</td>
+    <td class="nowrap" style="width:120px">${action ? `<button class="btn sm secondary" ${action}>查看明细</button>` : ''}</td>
+  </tr>`;
+
+  return `
+  <div class="toolbar no-print">
+    <div style="font-size:12.5px;color:var(--muted-2)">截至 ${today} · ${esc(COMPANY.name)} · 单位：${CUR().name}</div>
+    <div class="spacer"></div>
+    <button class="btn secondary" data-action="fundstmt-export">${icon('download', 14)} 导出 CSV</button>
+    <button class="btn secondary" data-action="print">${icon('printer', 14)} 打印</button>
+  </div>
+
+  <div class="card mb-14">
+    <div class="card-hd">
+      <div><div class="card-title">资金对账单</div>
+        <div class="card-sub">总账面金额 = 现金 + 银行 + 票据未回 + 借款 + 借支备用金</div></div>
+    </div>
+    <div class="card-bd">
+      <div class="summary-strip" style="border:none;padding:0">
+        <div class="item"><span>总账面金额</span><strong style="font-size:19px">${fmt(total)}</strong></div>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table class="tbl">
+        <thead><tr><th>构成项</th><th class="tr" style="width:170px">金额</th><th style="width:120px"></th></tr></thead>
+        <tbody>
+          ${row('库存现金', `${DB.accounts.filter(a => a.type === 'cash').length} 个现金账户`, cash, '', 'data-action="acc-filter-go" data-type="cash"')}
+          ${row('银行存款', `${DB.accounts.filter(a => a.type === 'bank').length} 个银行账户`, bank, '', 'data-action="acc-filter-go" data-type="bank"')}
+          ${row('票据未回', `${invs.length} 张未回 / 部分回`, invAmt, '', 'data-action="fundstmt-go" data-to="invoices" data-status="none"')}
+          ${row('借款（借入未还 + 员工未报销）', `${borrowCnt} 笔未结清`, borrow, '', 'data-action="fundstmt-go" data-to="debts" data-tab="borrow"')}
+          ${row('借支备用金（未核销）', `${advs.length} 笔已发放未核销`, advAmt, '', 'data-action="fundstmt-go" data-to="advances" data-status="issued"')}
+        </tbody>
+        <tfoot><tr>
+          <td>总账面金额</td>
+          <td class="tr num">${fmtPlain(total)}</td>
+          <td></td>
+        </tr></tfoot>
+      </table>
+    </div>
+  </div>
+
+  <div class="alert info">
+    ${icon('info', 15)}
+    <div>「现金 + 银行」是账上真实可动用的钱；票据未回、借款、借支备用金属于往来占用，<b>不是可花余额</b>，四项相加只用于反映资金全貌。</div>
+  </div>`;
 }
 
 function cfRange() {
@@ -962,7 +1121,8 @@ function reportSummary() {
   const { from, to } = UI.reportRange;
   const st = rangeStats(from, to);
   const opening = totalBalance(addDays(from, -1));
-  const closing = round2(opening + st.inflow - st.outflow);
+  /* 期末余额走统一取数：opening+in-out 会漏掉跨公司转账（type='transfer' 不计入 inflow/outflow） */
+  const closing = totalBalance(to);
 
   const months = monthsBetween(from, to).slice(-24);
   const mRows = months.map(k => {
@@ -1060,20 +1220,23 @@ function viewAccounts() {
   const yearStart = `${today.slice(0, 4)}-01-01`;
   const cashTotal = round2(DB.accounts.filter(a => a.type === 'cash').reduce((s, a) => s + balanceOf(a), 0));
   const bankTotal = round2(totalBalance() - cashTotal);
+  /* 卡片点击按类型过滤列表（REQ-19） */
+  const typeFilter = UI.accType || '';
+  const shown = typeFilter ? DB.accounts.filter(a => a.type === typeFilter) : DB.accounts;
 
   return `
   <div class="stat-grid mb-14" style="grid-template-columns:repeat(3,minmax(0,1fr))">
-    <div class="stat hero">
+    <div class="stat hero is-clickable" data-action="acc-filter" data-type="" title="显示全部账户">
       <div class="stat-top"><span class="stat-label">资金总额</span><span class="stat-ico">${icon('wallet', 15)}</span></div>
       <div class="stat-value" data-count="${totalBalance()}">${fmt(totalBalance())}</div>
-      <div class="stat-foot">${DB.accounts.length} 个账户</div>
+      <div class="stat-foot">${DB.accounts.length} 个账户${typeFilter ? ' · 点击显示全部' : ''}</div>
     </div>
-    <div class="stat">
+    <div class="stat is-clickable" data-action="acc-filter" data-type="cash" title="只看现金账户">
       <div class="stat-top"><span class="stat-label">库存现金</span><span class="stat-ico warn">${icon('wallet', 15)}</span></div>
       <div class="stat-value sm" data-count="${cashTotal}">${fmt(cashTotal)}</div>
       <div class="stat-foot">${DB.accounts.filter(a => a.type === 'cash').length} 个现金账户</div>
     </div>
-    <div class="stat">
+    <div class="stat is-clickable" data-action="acc-filter" data-type="bank" title="只看银行账户">
       <div class="stat-top"><span class="stat-label">银行存款</span><span class="stat-ico">${icon('bank', 15)}</span></div>
       <div class="stat-value sm" data-count="${bankTotal}">${fmt(bankTotal)}</div>
       <div class="stat-foot">${DB.accounts.filter(a => a.type === 'bank').length} 个银行账户</div>
@@ -1095,7 +1258,7 @@ function viewAccounts() {
           <th class="tr" style="width:130px">当前余额</th>
           <th style="width:110px"></th>
         </tr></thead>
-        <tbody>${DB.accounts.map(a => {
+        <tbody>${shown.map(a => {
           const s = accountStats(a, yearStart, today);
           const hasTx = DB.transactions.some(t => t.accountId === a.id || t.toAccountId === a.id);
           return `<tr>
@@ -1108,7 +1271,8 @@ function viewAccounts() {
                 </div>
               </div>
             </td>
-            <td><span class="pill ${a.type === 'cash' ? 'warn' : 'info'}">${a.type === 'cash' ? '现金' : '银行'}</span></td>
+            <td><span class="pill ${a.type === 'cash' ? 'warn' : 'info'}">${a.type === 'cash' ? '现金' : '银行'}</span>
+              ${accCurrency(a) !== baseCurrency() ? `<span class="pill muted">${accCurrency(a)}</span>` : ''}</td>
             <td>
               <div style="font-size:12.5px;color:var(--ink-3)">${esc(a.bankName || '—')}</div>
               <div class="cell-sub mono">${esc(a.accountNo || '')}</div>
@@ -1116,9 +1280,13 @@ function viewAccounts() {
             <td class="tr num" style="color:var(--muted)">${fmtPlain(a.openingBalance)}</td>
             <td class="tr num" style="color:var(--in)">${s.inflow ? '+' + fmtPlain(s.inflow) : '—'}</td>
             <td class="tr num" style="color:var(--out)">${s.outflow ? '-' + fmtPlain(s.outflow) : '—'}</td>
-            <td class="tr cell-amount">${fmtPlain(balanceOf(a))}</td>
+            <td class="tr cell-amount" data-action="acc-detail" data-id="${a.id}" title="点击查看该账户流水" style="cursor:pointer">
+              ${fmtCur(balanceOf(a), accCurrency(a))}
+              ${accCurrency(a) !== baseCurrency() ? `<div class="cell-sub">≈ ${fmt(toBase(balanceOf(a), accCurrency(a)) ?? 0)}</div>` : ''}
+            </td>
             <td>
               <div class="row-actions">
+                <button class="btn sm secondary" data-action="acc-detail" data-id="${a.id}" title="查看该账户流水">明细</button>
                 <button class="icon-btn" title="对账调整" data-action="reconcile" data-id="${a.id}">${icon('sliders', 14)}</button>
                 <button class="icon-btn" title="编辑" data-action="edit-acc" data-id="${a.id}">${icon('edit', 14)}</button>
                 <button class="icon-btn danger" title="${hasTx ? '该账户已有流水，不能删除' : '删除'}" data-action="del-acc" data-id="${a.id}" ${hasTx ? 'disabled' : ''}>${icon('trash', 14)}</button>
@@ -1267,6 +1435,31 @@ function viewUsers() {
    设置
    ========================================================================== */
 
+/* 汇率录入区（REQ-22）：每个外币一条最新汇率，只增不改，历史留痕 */
+function fxRatesHTML() {
+  const base = baseCurrency();
+  const others = Object.keys(CURRENCIES).filter(k => k !== base);
+  if (!others.length) return '';
+  const rows = others.map(k => {
+    const r = baseRate(k);
+    const list = fxList(k);
+    return `<tr>
+      <td><b>${CURRENCIES[k].name}</b> <span class="pill muted">${k}</span></td>
+      <td class="tr num">${r == null ? '<span class="pill warn">未录入</span>' : r.toFixed(4)}</td>
+      <td style="font-size:11.5px;color:var(--muted-2)">${list.length ? fmtDateTime(list[list.length - 1].at || '') + (list[list.length - 1].byName ? ' · ' + esc(list[list.length - 1].byName) : '') : '—'}</td>
+      <td class="nowrap"><button class="btn sm secondary" data-action="fx-add" data-cur="${k}">录入汇率</button></td>
+    </tr>`;
+  }).join('');
+  return `<div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px">
+    <div style="font-size:12.5px;font-weight:600;margin-bottom:8px">外币汇率（1 外币 = ? ${base}）</div>
+    <div class="table-wrap"><table class="tbl">
+      <thead><tr><th>币种</th><th class="tr" style="width:130px">当前汇率</th><th style="width:220px">最后录入</th><th style="width:120px"></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <div class="hint" style="margin-top:8px">缺汇率的外币账户不计入汇总，相关页面会提示「未折算」，不会按 1:1 静默折算。</div>
+  </div>`;
+}
+
 function viewSettings() {
   const sizeKB = (new Blob([JSON.stringify(DB)]).size / 1024).toFixed(1);
   const dates = DB.transactions.map(t => t.date).sort();
@@ -1303,15 +1496,16 @@ function viewSettings() {
       </div>
 
       <div class="setting-block">
-        <h4>全局记账货币</h4>
-        <p>货币决定全站金额的符号与口径，不做汇率换算。公司名称等公司级信息请到「公司管理」维护。</p>
+        <h4>本位币与汇率</h4>
+        <p>本位币是所有汇总与报表的计量单位。账户可以挂不同币种，跨币种汇总时按下面录入的汇率折算，原币金额始终保留。</p>
         <div class="form-grid">
-          <label class="field span-2"><span class="lbl">记账货币</span><select id="currency-select">${curOpts}</select></label>
+          <label class="field span-2"><span class="lbl">本位币</span><select id="currency-select">${curOpts}</select></label>
         </div>
         <div class="setting-actions" style="margin-top:12px">
-          <button class="btn primary sm" data-action="save-currency">保存货币</button>
+          <button class="btn primary sm" data-action="save-currency">保存本位币</button>
           <button class="btn ghost sm" data-action="nav" data-view="companies">去公司管理</button>
         </div>
+        ${fxRatesHTML()}
       </div>
 
       <div class="setting-block">
@@ -1458,29 +1652,55 @@ function viewSettings() {
    集团视图（多公司）
    ========================================================================== */
 
+/* 集团下没有任何参与合并的公司：给引导，而不是渲染一屏 0 */
+function groupEmptyState() {
+  const hq = groupHQ();
+  const actions = [
+    isAdmin() ? `<button class="btn primary" data-action="new-company">${icon('plus', 15)} 新建公司</button>` : '',
+    (isAdmin() && hq) ? `<button class="btn secondary" data-action="set-parent-mode" data-mode="company">把总公司改为参与核算</button>` : ''
+  ].filter(Boolean).join('');
+  return `
+  <div class="page-hero">
+    <div><h2>${esc(groupTitle())}</h2><p>集团下还没有参与合并的公司</p></div>
+  </div>
+  <div class="card"><div class="card-bd">
+    ${emptyState({
+      ico: 'layers',
+      title: '还没有成员公司',
+      desc: hq
+        ? `「${esc(hq.name)}」被设为集团总公司，且登记方式是「仅作集团登记主体」，因此不参与合并。新建一家分公司，或把总公司改为「作为独立公司参与核算」。`
+        : '新建一家公司后，集团总览就会按合并口径显示数据。',
+      actions
+    })}
+  </div></div>`;
+}
+
 function viewGroupDashboard() {
   const today = todayISO();
   const thisM = monthOf(today);
+  /* 合并口径只在这里取一次，下面全部引用 cos。
+     早期版本 8 处各写一遍 DB.companies，导致 registry 模式下「明细列表有、合计没有」。 */
+  const cos = accountingCompanies();
+  if (!cos.length) return groupEmptyState();
   const g = groupTotals();
 
   let mIn = 0, mOut = 0;
-  DB.companies.forEach(co => {
+  cos.forEach(co => {
     const s = rangeStats(thisM + '-01', today, co);
     mIn += s.inflow; mOut += s.outflow;
   });
   mIn = round2(mIn); mOut = round2(mOut);
   const mNet = round2(mIn - mOut);
 
-  const end = today;
-  const start = UI.trendDays === 0 ? `${today.slice(0, 4)}-01-01` : addDays(end, -(UI.trendDays - 1));
+  const tw = trendWindow();
+  const start = tw.start;
+  const end = tw.end;
   const series = groupSeries(start, end);
   const chg = round2(g.total - (series[0] ? series[0].value : 0));
 
-  const seg = [[30, '近30天'], [90, '近90天'], [0, '本年']].map(([d, l]) =>
-    `<button class="seg-btn ${UI.trendDays === d ? 'is-active' : ''}" data-action="trend-range" data-days="${d}">${l}</button>`
-  ).join('');
+  const seg = trendSegHTML();
 
-  const rows = DB.companies.map(co => {
+  const rows = cos.map(co => {
     const t = companyTotals(co);
     const s = rangeStats(thisM + '-01', today, co);
     const lend = debtTotals('lend', co);
@@ -1496,7 +1716,7 @@ function viewGroupDashboard() {
 
   /* 跨公司最近流水 */
   const recent = [];
-  DB.companies.forEach(co => {
+  cos.forEach(co => {
     co.transactions.forEach(t => recent.push({ t, co }));
   });
   recent.sort((a, b) => a.t.date === b.t.date
@@ -1506,11 +1726,47 @@ function viewGroupDashboard() {
   const payRows = rows.filter(r => r.lend > 0 || r.pay > 0).sort((a, b) => (b.lend + b.pay) - (a.lend + a.pay));
   const payMax = Math.max(1, ...payRows.map(r => Math.max(r.lend, r.pay)));
 
+  /* 总公司若被排除在合并之外，单独出一张卡放在最上面，
+     否则用户切到 registry 模式后会以为「总公司没了」。 */
+  const hq = groupHQ();
+  const hqExcluded = !!(hq && parentMode() === 'registry');
+  const hqRow = hqExcluded ? (() => {
+    const t = companyTotals(hq);
+    const s = rangeStats(thisM + '-01', today, hq);
+    return {
+      co: hq, t, s,
+      lend: debtTotals('lend', hq).remaining,
+      pay: round2(debtTotals('borrow', hq).remaining + debtTotals('reimburse', hq).remaining),
+      net: round2(s.inflow - s.outflow)
+    };
+  })() : null;
+
+  const coCard = r => `
+      <div class="co-card" data-action="enter-company" data-id="${r.co.id}" style="--c:${r.co.color}">
+        <div class="co-card-top">
+          <span class="co-dot" style="--c:${r.co.color}"></span>
+          <strong>${esc(r.co.name)}</strong>
+          ${r.co.isParent ? '<span class="pill move">总公司</span>' : ''}
+          <span class="pill muted">${r.co.accounts.length} 账户</span>
+        </div>
+        <div class="co-card-bal">${fmt(r.t.total)}</div>
+        <div class="co-card-net" style="color:${r.net > 0 ? 'var(--in)' : r.net < 0 ? 'var(--out)' : 'var(--muted-2)'}">
+          本月 ${r.net > 0 ? '+' : ''}${fmtShort(r.net)}
+        </div>
+        <div class="co-card-grid">
+          <div><span>现金</span><b>${fmtShort(r.t.cash)}</b></div>
+          <div><span>银行</span><b>${fmtShort(r.t.bank)}</b></div>
+          <div><span>应收</span><b style="color:var(--in)">${fmtShort(r.lend)}</b></div>
+          <div><span>应付</span><b style="color:var(--out)">${fmtShort(r.pay)}</b></div>
+        </div>
+        <div class="co-card-foot">进入账本 ${icon('chevronRight', 13)}</div>
+      </div>`;
+
   return `
   <div class="page-hero">
     <div>
       <h2>${esc(groupTitle())}</h2>
-      <p>${fmtDateCN(today)} · 共 ${DB.companies.length} 家公司，账本相互独立，此处为合并口径</p>
+      <p>${fmtDateCN(today)} · 共 ${cos.length} 家公司合并${hqExcluded ? '（不含总公司自身）' : ''}，账本相互独立</p>
     </div>
     <div style="display:flex;gap:8px">
       ${isAdmin() ? `<button class="btn ghost" data-action="nav" data-view="settings">${icon('edit', 14)} ${DB.meta.groupName ? '改集团名称' : '给集团命名'}</button>` : ''}
@@ -1560,16 +1816,16 @@ function viewGroupDashboard() {
     </div>
   </div>
 
-  ${insightsCard(insightItems(DB.companies))}
+  ${insightsCard(insightItems(cos))}
 
   <div class="grid g-main-side mb-14">
     <div class="card">
       <div class="card-hd">
         <div>
           <div class="card-title">集团资金趋势</div>
-          <div class="card-sub">${start} 至 ${end} · ${DB.companies.length} 家公司合计</div>
+          <div class="card-sub">${start} 至 ${end} · ${cos.length} 家公司合计</div>
         </div>
-        <div class="seg">${seg}</div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><div class="seg" style="width:auto">${seg}</div>${trendDateHTML()}</div>
       </div>
       <div class="card-bd">${areaChart(series, { height: 250 })}</div>
     </div>
@@ -1580,9 +1836,9 @@ function viewGroupDashboard() {
       </div>
       <div class="card-bd">
         <div style="display:flex;gap:26px;margin-bottom:14px">
-          <div><div style="font-size:11.5px;color:var(--muted)">流入</div>
+          <div data-action="drill" data-metric="monthIn" title="点击查看各公司本月流入" style="cursor:pointer"><div style="font-size:11.5px;color:var(--muted)">流入 ${icon('chevronRight', 11)}</div>
             <div style="font-size:19px;font-weight:650;color:var(--in);font-variant-numeric:tabular-nums">+${fmtShort(mIn)}</div></div>
-          <div><div style="font-size:11.5px;color:var(--muted)">流出</div>
+          <div data-action="drill" data-metric="monthOut" title="点击查看各公司本月流出" style="cursor:pointer"><div style="font-size:11.5px;color:var(--muted)">流出 ${icon('chevronRight', 11)}</div>
             <div style="font-size:19px;font-weight:650;color:var(--out);font-variant-numeric:tabular-nums">-${fmtShort(mOut)}</div></div>
           <div><div style="font-size:11.5px;color:var(--muted)">净额</div>
             <div style="font-size:19px;font-weight:650;color:${mNet >= 0 ? 'var(--in)' : 'var(--out)'};font-variant-numeric:tabular-nums">${mNet > 0 ? '+' : ''}${fmtShort(mNet)}</div></div>
@@ -1610,27 +1866,20 @@ function viewGroupDashboard() {
     <span style="font-weight:400;color:var(--muted-2);font-size:11.5px">点击卡片进入该公司账本</span>
   </div>
 
+  ${hqRow ? `
+  <div class="card mb-14">
+    <div class="card-hd">
+      <div>
+        <div class="card-title">集团总公司 · 自身账本</div>
+        <div class="card-sub">${esc(hqRow.co.name)} · 登记方式为「仅作集团登记主体」，<b>不计入下方合并合计</b></div>
+      </div>
+      ${isAdmin() ? `<div class="card-actions"><button class="btn ghost sm" data-action="set-parent-mode" data-mode="company">改为参与合并</button></div>` : ''}
+    </div>
+    <div class="card-bd"><div class="co-grid">${coCard(hqRow)}</div></div>
+  </div>` : ''}
+
   <div class="co-grid mb-14">
-    ${rows.map(r => `
-      <div class="co-card" data-action="enter-company" data-id="${r.co.id}" style="--c:${r.co.color}">
-        <div class="co-card-top">
-          <span class="co-dot" style="--c:${r.co.color}"></span>
-          <strong>${esc(r.co.name)}</strong>
-          ${r.co.isParent ? '<span class="pill move">总公司</span>' : ''}
-          <span class="pill muted">${r.co.accounts.length} 账户</span>
-        </div>
-        <div class="co-card-bal">${fmt(r.t.total)}</div>
-        <div class="co-card-net" style="color:${r.net > 0 ? 'var(--in)' : r.net < 0 ? 'var(--out)' : 'var(--muted-2)'}">
-          本月 ${r.net > 0 ? '+' : ''}${fmtShort(r.net)}
-        </div>
-        <div class="co-card-grid">
-          <div><span>现金</span><b>${fmtShort(r.t.cash)}</b></div>
-          <div><span>银行</span><b>${fmtShort(r.t.bank)}</b></div>
-          <div><span>应收</span><b style="color:var(--in)">${fmtShort(r.lend)}</b></div>
-          <div><span>应付</span><b style="color:var(--out)">${fmtShort(r.pay)}</b></div>
-        </div>
-        <div class="co-card-foot">进入账本 ${icon('chevronRight', 13)}</div>
-      </div>`).join('')}
+    ${rows.map(coCard).join('')}
     ${isAdmin() ? `<button class="co-card co-card-add" data-action="new-company">
       <div class="empty-ico" style="width:38px;height:38px">${icon('plus', 18)}</div>
       <span>新建公司</span>
@@ -1668,16 +1917,19 @@ function viewGroupReports() {
   const t = todayISO();
   if (!UI.groupRange.from || !UI.groupRange.to) UI.groupRange = { from: `${t.slice(0, 4)}-01-01`, to: t };
   const { from, to } = UI.groupRange;
+  const cos = accountingCompanies();
   const presets = [['month', '本月'], ['last', '上月'], ['quarter', '本季'], ['year', '本年']]
     .map(([k, l]) => `<button class="seg-btn ${UI.groupPreset === k ? 'is-active' : ''}" data-action="group-preset" data-preset="${k}">${l}</button>`).join('');
 
-  const rows = DB.companies.map(co => {
+  const rows = cos.map(co => {
     const s = rangeStats(from, to, co);
-    const tt = companyTotals(co);
+    /* 必须传 to：不传就是「今天」口径，会和表体的区间口径打架，同页出现两套基准 */
+    const tt = companyTotals(co, to);
     const op = companyBalanceAt(co, addDays(from, -1));
     return {
       co, s, tt, op,
-      close: round2(op + s.inflow - s.outflow),
+      /* 期末余额走统一取数，避免漏掉跨公司转账（rangeStats.transfer 不在 inflow/outflow 里） */
+      close: companyBalanceAt(co, to),
       lend: debtTotals('lend', co).remaining,
       pay: round2(debtTotals('borrow', co).remaining + debtTotals('reimburse', co).remaining)
     };
@@ -1688,6 +1940,20 @@ function viewGroupReports() {
     close: a.close + r.close, lend: a.lend + r.lend, pay: a.pay + r.pay,
     cash: a.cash + r.tt.cash, bank: a.bank + r.tt.bank, total: a.total + r.tt.total
   }), { op: 0, inflow: 0, outflow: 0, close: 0, lend: 0, pay: 0, cash: 0, bank: 0, total: 0 });
+
+  /* 总公司被排除在合并外时，另给一行参考值，方便核对「合计 + 总公司 = 全部」 */
+  const hqR = groupHQ();
+  const hqExcludedR = !!(hqR && parentMode() === 'registry');
+  const hqSum = hqExcludedR ? (() => {
+    const s = rangeStats(from, to, hqR);
+    return {
+      op: companyBalanceAt(hqR, addDays(from, -1)),
+      inflow: s.inflow, outflow: s.outflow,
+      close: companyBalanceAt(hqR, to),
+      lend: debtTotals('lend', hqR).remaining,
+      pay: round2(debtTotals('borrow', hqR).remaining + debtTotals('reimburse', hqR).remaining)
+    };
+  })() : null;
 
   const cf = groupCashFlow(from, to);
   const cfRow = r => `<tr>
@@ -1754,18 +2020,28 @@ function viewGroupReports() {
             <td class="tr num">${fmtPlain(sum.close)}</td>
             <td class="tr num" style="color:var(--in)">${fmtPlain(sum.lend)}</td>
             <td class="tr num" style="color:var(--out)">${fmtPlain(sum.pay)}</td>
-          </tr></tfoot>
+          </tr>
+          ${hqSum ? `<tr style="color:var(--muted-2)">
+            <td>其中：总公司自身（不计入合计）</td>
+            <td class="tr num">${fmtPlain(hqSum.op)}</td>
+            <td class="tr num">${fmtPlain(hqSum.inflow)}</td>
+            <td class="tr num">${fmtPlain(hqSum.outflow)}</td>
+            <td class="tr num">${fmtPlain(hqSum.close)}</td>
+            <td class="tr num">${fmtPlain(hqSum.lend)}</td>
+            <td class="tr num">${fmtPlain(hqSum.pay)}</td>
+          </tr>` : ''}
+          </tfoot>
         </table>
       </div>
     </div>
   </div>
 
   <div class="grid g-3 mb-14">
-    <div class="stat"><div class="stat-top"><span class="stat-label">集团资金总额</span><span class="stat-ico">${icon('layers', 15)}</span></div>
+    <div class="stat is-clickable" data-action="drill" data-metric="total" title="点击查看各公司构成"><div class="stat-top"><span class="stat-label">集团资金总额</span><span class="stat-ico">${icon('layers', 15)}</span></div>
       <div class="stat-value sm">${fmt(sum.total)}</div><div class="stat-foot">现金 ${fmtShort(sum.cash)} · 银行 ${fmtShort(sum.bank)}</div></div>
-    <div class="stat"><div class="stat-top"><span class="stat-label">集团应收合计</span><span class="stat-ico in">${icon('debt', 15)}</span></div>
+    <div class="stat is-clickable" data-action="drill" data-metric="lend" title="点击查看各公司构成"><div class="stat-top"><span class="stat-label">集团应收合计</span><span class="stat-ico in">${icon('debt', 15)}</span></div>
       <div class="stat-value sm">${fmt(sum.lend)}</div><div class="stat-foot">借出未收回</div></div>
-    <div class="stat"><div class="stat-top"><span class="stat-label">集团应付合计</span><span class="stat-ico out">${icon('receipt', 15)}</span></div>
+    <div class="stat is-clickable" data-action="drill" data-metric="pay" title="点击查看各公司构成"><div class="stat-top"><span class="stat-label">集团应付合计</span><span class="stat-ico out">${icon('receipt', 15)}</span></div>
       <div class="stat-value sm">${fmt(sum.pay)}</div><div class="stat-foot">借入 + 员工未报销</div></div>
   </div>
 
@@ -1773,7 +2049,7 @@ function viewGroupReports() {
     <div class="card-hd">
       <div>
         <div class="card-title">合并现金流量表（直接法）</div>
-        <div class="card-sub">${from} 至 ${to} · ${DB.companies.length} 家公司合计 · 单位：${CUR().name}</div>
+        <div class="card-sub">${from} 至 ${to} · ${cos.length} 家公司合计${hqExcludedR ? '（不含总公司自身）' : ''} · 单位：${CUR().name}</div>
       </div>
     </div>
     <div class="card-bd flush">
@@ -1803,6 +2079,10 @@ function viewCompanies() {
       pay: round2(debtTotals('borrow', co).remaining + debtTotals('reimburse', co).remaining)
     };
   });
+  /* 合计口径与集团报表保持一致：registry 模式下排除总公司自身 */
+  const hqEx = !!(groupHQ() && parentMode() === 'registry');
+  const sumRows = hqEx ? rows.filter(r => !r.co.isParent) : rows;
+  const sumOf = k => fmtPlain(sumRows.reduce((s, r) => s + (k === 'total' || k === 'cash' || k === 'bank' ? r.t[k] : r[k]), 0));
 
   return `
   <div class="card">
@@ -1823,7 +2103,7 @@ function viewCompanies() {
               <span class="co-badge sm" style="--c:${co.color}">${esc(initials(co.name))}</span>
               <div>
                 <div class="cell-main">${esc(co.name)}${co.isParent ? ' <span class="pill move">总公司</span>' : ''}</div>
-                <div class="cell-sub">${esc(co.note || co.taxNo || '—')}</div>
+                <div class="cell-sub">${esc(co.note || co.taxNo || '—')}${hqEx && co.isParent ? ' · 不计入合并' : ''}</div>
               </div>
             </div>
           </td>
@@ -1842,12 +2122,12 @@ function viewCompanies() {
           </td>
         </tr>`).join('')}</tbody>
         <tfoot><tr>
-          <td>集团合计</td>
-          <td class="tr num">${fmtPlain(rows.reduce((s, r) => s + r.t.total, 0))}</td>
-          <td class="tr num">${fmtPlain(rows.reduce((s, r) => s + r.t.cash, 0))}</td>
-          <td class="tr num">${fmtPlain(rows.reduce((s, r) => s + r.t.bank, 0))}</td>
-          <td class="tr num">${fmtPlain(rows.reduce((s, r) => s + r.lend, 0))}</td>
-          <td class="tr num">${fmtPlain(rows.reduce((s, r) => s + r.pay, 0))}</td>
+          <td>集团合计${hqEx ? '（不含总公司自身）' : ''}</td>
+          <td class="tr num">${sumOf('total')}</td>
+          <td class="tr num">${sumOf('cash')}</td>
+          <td class="tr num">${sumOf('bank')}</td>
+          <td class="tr num">${sumOf('lend')}</td>
+          <td class="tr num">${sumOf('pay')}</td>
           <td colspan="2"></td>
         </tr></tfoot>
       </table>
@@ -1936,6 +2216,7 @@ function viewProfile() {
     <div class="card-hd">
       <div><div class="card-title">账号与凭证</div><div class="card-sub">公户、网银、GRA 等登录信息，默认隐藏密码</div></div>
       <div class="card-actions">
+        <button class="btn primary sm" data-action="vault-bundle">${icon('plus', 14)} 账号卡片</button>
         <button class="btn secondary sm" data-action="vault-templates">${icon('plus', 14)} 快速添加</button>
       </div>
     </div>
@@ -2027,6 +2308,8 @@ function viewProfile() {
 function filteredLogs() {
   const f = UI.logFilter || (UI.logFilter = { from: '', to: '', user: '', module: '', action: '' });
   return (DB.auditLogs || []).filter(l => {
+    /* 逻辑删除：默认不显示，勾选「显示已删除」才出现（REQ-21） */
+    if (l.deleted && !UI.logShowDeleted) return false;
     if (f.from && l.at.slice(0, 10) < f.from) return false;
     if (f.to && l.at.slice(0, 10) > f.to) return false;
     if (f.user && l.userId !== f.user) return false;
@@ -2056,16 +2339,26 @@ function viewLogs() {
   const body = rows.length ? (
     '<div class="table-wrap"><table class="tbl">' +
     '<thead><tr><th style="width:140px">时间</th><th style="width:80px">用户</th><th style="width:80px">模块</th>' +
-    '<th style="width:64px">操作</th><th>对象</th><th>变更前</th><th>变更后</th><th style="width:56px">结果</th></tr></thead><tbody>' +
-    rows.map(l => '<tr>' +
+    '<th style="width:64px">操作</th><th>对象</th><th>变更前</th><th>变更后</th><th style="width:56px">结果</th>' +
+    '<th style="width:130px">备注 / 操作</th></tr></thead><tbody>' +
+    rows.map(l => '<tr' + (l.deleted ? ' style="opacity:.55"' : '') + '>' +
       '<td class="nowrap" style="font-size:11.5px;color:var(--muted)">' + fmtDateTime(l.at) + '</td>' +
       '<td class="nowrap">' + esc(l.userName) + '</td>' +
       '<td class="nowrap">' + esc(l.module) + '</td>' +
       '<td class="nowrap"><span class="pill ' + (l.action === '删除' || l.action === '清空' ? 'danger' : l.action === '新增' ? 'ok' : 'muted') + '">' + esc(l.action) + '</span></td>' +
-      '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(l.target) + '</td>' +
-      '<td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted-2);font-size:11.5px">' + esc(l.before || '—') + '</td>' +
-      '<td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted-2);font-size:11.5px">' + esc(l.after || '—') + '</td>' +
+      '<td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(l.target) +
+        (l.deleted ? ' <span class="pill danger">已删除</span>' : '') + '</td>' +
+      '<td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted-2);font-size:11.5px">' + esc(l.before || '—') + '</td>' +
+      '<td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted-2);font-size:11.5px">' + esc(l.after || '—') + '</td>' +
       '<td>' + (l.result === 'fail' ? '<span class="pill danger">失败</span>' : '<span class="pill ok">成功</span>') + '</td>' +
+      '<td class="nowrap">' +
+        (l.note
+          ? '<div class="cell-sub" style="max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(l.note) + '">' + esc(l.note) + '</div>'
+          : '') +
+        (l.deleted ? '' :
+          '<button class="icon-btn" title="添加备注" data-action="log-note" data-id="' + l.id + '">' + icon('edit', 13) + '</button>' +
+          '<button class="icon-btn danger" title="删除这条日志" data-action="log-del" data-id="' + l.id + '">' + icon('trash', 13) + '</button>') +
+      '</td>' +
     '</tr>').join('') + '</tbody></table></div>'
   ) : emptyState({ ico: 'file', title: '暂无日志', desc: '新增、修改、删除等操作会自动记录在这里' });
 
@@ -2094,6 +2387,7 @@ function viewLogs() {
       <label class="field"><label>操作</label><select data-log="action">${actOpts}</select></label>
     </div>
     <div class="tb-actions">
+      <label class="switch" style="margin-right:10px"><input type="checkbox" data-log-show-del ${UI.logShowDeleted ? 'checked' : ''}><span class="track"></span><span>显示已删除</span></label>
       <button class="btn secondary" data-action="log-reset">重置</button>
     </div>
   </div>
@@ -2239,8 +2533,19 @@ function viewVouchers() {
 
 /* ------------------------------ 借支备用金 ------------------------------ */
 function viewAdvances() {
-  const list = ensureAdvanceList(COMPANY).slice().sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-  const sum = list.reduce((s, a) => {
+  const allList = ensureAdvanceList(COMPANY).slice().sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  const fs = ledgerState('advance');
+  const filtered = applyLedgerFilter(allList, fs, a => ({
+    date: a.date,
+    status: advanceInfo(a).status,
+    text: `${a.userName || ''} ${a.reason || ''}`
+  }));
+  const PAGE = 15;
+  const page = Math.min(Math.max(1, fs.page || 1), Math.max(1, Math.ceil(filtered.length / PAGE)));
+  const list = filtered.slice((page - 1) * PAGE, page * PAGE);
+
+  /* 顶部汇总仍按全量统计，不受筛选影响 */
+  const sum = allList.reduce((s, a) => {
     const i = advanceInfo(a);
     if (i.status === 'issued') { s.issued += num(a.amount); s.remain += i.remain; }
     return s;
@@ -2259,6 +2564,7 @@ function viewAdvances() {
       <td class="nowrap">
         ${i.status === 'pending' ? `<button class="btn sm primary" data-action="issue-advance" data-id="${a.id}">发放</button>` : ''}
         ${i.status === 'issued' ? `<button class="btn sm secondary" data-action="close-advance" data-id="${a.id}">核销</button>` : ''}
+        ${i.drawCount ? `<button class="icon-btn" title="撤销最近一次核销" data-action="undo-advance" data-id="${a.id}">${icon('rotate', 14)}</button>` : ''}
         <button class="icon-btn danger" data-action="del-advance" data-id="${a.id}" title="删除">${icon('trash', 14)}</button>
       </td>
     </tr>`;
@@ -2270,13 +2576,23 @@ function viewAdvances() {
     <div><button class="btn primary" data-action="new-advance">${icon('plus', 15)} 申请借支</button></div>
   </div>
   <div class="stat-grid mb-14">
-    <div class="stat hero"><div class="stat-top"><span class="stat-label">已发放未核销</span><span class="stat-ico">${icon('wallet', 15)}</span></div>
-      <div class="stat-value" data-count="${sum.issued}">${fmt(sum.issued)}</div><div class="stat-foot">共 ${list.filter(a => a.status === 'issued').length} 笔</div></div>
-    <div class="stat"><div class="stat-top"><span class="stat-label">待核销余额</span><span class="stat-ico out">${icon('receipt', 15)}</span></div>
+    <div class="stat hero is-clickable" data-action="f-quick" data-f="advance" data-k="status" data-v="issued" title="只看已发放未核销">
+      <div class="stat-top"><span class="stat-label">已发放未核销</span><span class="stat-ico">${icon('wallet', 15)}</span></div>
+      <div class="stat-value" data-count="${sum.issued}">${fmt(sum.issued)}</div><div class="stat-foot">共 ${allList.filter(a => a.status === 'issued').length} 笔</div></div>
+    <div class="stat is-clickable" data-action="f-quick" data-f="advance" data-k="status" data-v="issued" title="只看待核销">
+      <div class="stat-top"><span class="stat-label">待核销余额</span><span class="stat-ico out">${icon('receipt', 15)}</span></div>
       <div class="stat-value sm">${fmt(sum.remain)}</div><div class="stat-foot">核销后清零</div></div>
-    <div class="stat"><div class="stat-top"><span class="stat-label">全部笔数</span><span class="stat-ico">${icon('layers', 15)}</span></div>
-      <div class="stat-value sm">${list.length}</div><div class="stat-foot">含已核销</div></div>
+    <div class="stat is-clickable" data-action="f-quick" data-f="advance" data-k="__all" data-v="1" title="清空筛选，显示全部">
+      <div class="stat-top"><span class="stat-label">全部笔数</span><span class="stat-ico">${icon('layers', 15)}</span></div>
+      <div class="stat-value sm">${allList.length}</div><div class="stat-foot">含已核销</div></div>
   </div>
+
+  ${filterBar('advance', [
+    { k: 'from', t: 'date', label: '借支日期起' },
+    { k: 'to', t: 'date', label: '借支日期止' },
+    { k: 'status', t: 'select', label: '状态', opts: [['', '全部'], ['pending', '待发放'], ['issued', '已发放未核销'], ['closed', '已核销']] },
+    { k: 'kw', t: 'text', label: '员工 / 事由', ph: '输入关键字' }
+  ], fs)}
   <div class="card">
     <div class="card-bd flush">
       ${rows ? `<div class="table-wrap"><table class="tbl">
@@ -2286,16 +2602,28 @@ function viewAdvances() {
         <tbody>${rows}</tbody></table></div>`
       : emptyState({ ico: 'wallet', title: '还没有借支记录', desc: '员工预支差旅、采购等费用时在这里登记，发放后自动生成支出流水',
           actions: `<button class="btn primary" data-action="new-advance">${icon('plus', 15)} 申请借支</button>` })}
+      ${filtered.length > PAGE ? pager(filtered.length, page, PAGE, 'advance-page') : ''}
     </div>
   </div>`;
 }
 
 /* ------------------------------ 票据未回 ------------------------------ */
 function viewInvoices() {
-  const list = ensureInvoiceList(COMPANY).slice().sort((a, b) => (b.payDate || '').localeCompare(a.payDate || ''));
-  const pend = list.filter(i => i.status !== 'done');
+  const allList = ensureInvoiceList(COMPANY).slice().sort((a, b) => (b.payDate || '').localeCompare(a.payDate || ''));
+  const fs = ledgerState('invoice');
+  const filtered = applyLedgerFilter(allList, fs, i => ({
+    date: i.payDate,
+    status: i.status,
+    overdue: invoiceOverdue(i),
+    text: `${i.party || ''} ${i.number || ''} ${i.note || ''}`
+  }));
+  const PAGE = 15;
+  const page = Math.min(Math.max(1, fs.page || 1), Math.max(1, Math.ceil(filtered.length / PAGE)));
+  const list = filtered.slice((page - 1) * PAGE, page * PAGE);
+
+  const pend = allList.filter(i => i.status !== 'done');
   const pendAmt = round2(pend.reduce((s, i) => s + num(i.amount), 0));
-  const over = list.filter(invoiceOverdue);
+  const over = allList.filter(invoiceOverdue);
 
   const rows = list.map(i => {
     const od = invoiceOverdue(i);
@@ -2308,7 +2636,8 @@ function viewInvoices() {
       <td><span class="pill ${i.status === 'done' ? 'ok' : i.status === 'partial' ? 'warn' : 'danger'}">${INVOICE_STATUS[i.status] || '未回'}</span></td>
       <td>${od ? '<span class="pill danger">逾期</span>' : ''}</td>
       <td class="nowrap">
-        <button class="icon-btn" data-action="edit-invoice" data-id="${i.id}" title="更新状态">${icon('edit', 14)}</button>
+        ${i.status !== 'done' ? `<button class="btn sm primary" data-action="inv-receive" data-id="${i.id}">回票</button> ` : ''}
+        <button class="icon-btn" data-action="edit-invoice" data-id="${i.id}" title="编辑">${icon('edit', 14)}</button>
         <button class="icon-btn danger" data-action="del-invoice" data-id="${i.id}" title="删除">${icon('trash', 14)}</button>
       </td>
     </tr>`;
@@ -2320,13 +2649,23 @@ function viewInvoices() {
     <div><button class="btn primary" data-action="new-invoice">${icon('plus', 15)} 登记未回票据</button></div>
   </div>
   <div class="stat-grid mb-14">
-    <div class="stat hero"><div class="stat-top"><span class="stat-label">未回票据金额</span><span class="stat-ico">${icon('receipt', 15)}</span></div>
+    <div class="stat hero is-clickable" data-action="f-quick" data-f="invoice" data-k="status" data-v="none" title="只看未回票据">
+      <div class="stat-top"><span class="stat-label">未回票据金额</span><span class="stat-ico">${icon('receipt', 15)}</span></div>
       <div class="stat-value" data-count="${pendAmt}">${fmt(pendAmt)}</div><div class="stat-foot">共 ${pend.length} 张</div></div>
-    <div class="stat"><div class="stat-top"><span class="stat-label">逾期未回</span><span class="stat-ico out">${icon('alert', 15)}</span></div>
+    <div class="stat is-clickable" data-action="f-quick" data-f="invoice" data-k="overdue" data-v="1" title="只看逾期未回">
+      <div class="stat-top"><span class="stat-label">逾期未回</span><span class="stat-ico out">${icon('alert', 15)}</span></div>
       <div class="stat-value sm" style="color:${over.length ? 'var(--danger)' : ''}">${over.length}</div><div class="stat-foot">超过预计回票日</div></div>
-    <div class="stat"><div class="stat-top"><span class="stat-label">已回</span><span class="stat-ico">${icon('check', 15)}</span></div>
-      <div class="stat-value sm">${list.filter(i => i.status === 'done').length}</div><div class="stat-foot">全部 ${list.length} 张</div></div>
+    <div class="stat is-clickable" data-action="f-quick" data-f="invoice" data-k="status" data-v="done" title="只看已回票据">
+      <div class="stat-top"><span class="stat-label">已回</span><span class="stat-ico">${icon('check', 15)}</span></div>
+      <div class="stat-value sm">${allList.filter(i => i.status === 'done').length}</div><div class="stat-foot">全部 ${allList.length} 张</div></div>
   </div>
+
+  ${filterBar('invoice', [
+    { k: 'from', t: 'date', label: '付款日期起' },
+    { k: 'to', t: 'date', label: '付款日期止' },
+    { k: 'status', t: 'select', label: '状态', opts: [['', '全部'], ['none', '未回'], ['partial', '部分回'], ['done', '已回']] },
+    { k: 'kw', t: 'text', label: '对方 / 票号', ph: '输入关键字' }
+  ], fs)}
   <div class="card">
     <div class="card-bd flush">
       ${rows ? `<div class="table-wrap"><table class="tbl">
@@ -2336,6 +2675,7 @@ function viewInvoices() {
         <tbody>${rows}</tbody></table></div>`
       : emptyState({ ico: 'receipt', title: '没有未回票据', desc: '付款后如果发票没到，在这里登记，到期会自动提醒',
           actions: `<button class="btn primary" data-action="new-invoice">${icon('plus', 15)} 登记未回票据</button>` })}
+      ${filtered.length > PAGE ? pager(filtered.length, page, PAGE, 'invoice-page') : ''}
     </div>
   </div>`;
 }
@@ -2419,7 +2759,7 @@ function viewDrill() {
         <div class="progress" style="height:8px"><i class="${r.value >= 0 ? 'ok' : 'danger'}" style="width:${w}%"></i></div>
       </td>
       <td class="nowrap">
-        <button class="btn sm secondary" data-action="drill-open" data-id="${r.co.id}">查看明细</button>
+        <button class="btn sm secondary" data-action="drill-open" data-id="${r.co.id}" data-metric="${metric}">查看明细</button>
       </td>
     </tr>`;
   }).join('');
@@ -2580,29 +2920,42 @@ function viewBackup() {
     <div class="card-hd">
       <div><div class="card-title">账套版本池</div>
         <div class="card-sub">手动与自动备份统一计入，最多保留 ${MAXV} 个版本，超出自动删除最旧</div></div>
-      <div class="card-sub" style="flex:none">当前 ${(UI.backupVersions || []).length} / ${MAXV}</div>
+      <div class="card-sub" style="flex:none" id="bk-ver-count">当前 ${(UI.backupVersions || []).length} / ${MAXV}</div>
     </div>
-    <div class="card-bd flush">
-      ${(() => {
-        const list = UI.backupVersions || [];
-        if (!list.length) return emptyState({ ico: 'upload', title: '还没有备份版本', desc: '配置云盘后点「立即备份到云盘」，或开启自动备份' });
-        return '<div class="table-wrap"><table class="tbl"><thead><tr>' +
-          '<th style="width:56px">版本</th><th style="width:70px">类型</th><th style="width:150px">备份时间</th>' +
-          '<th class="tr" style="width:100px">大小</th><th>云盘位置</th><th style="width:190px">操作</th></tr></thead><tbody>' +
-          list.map(x => '<tr>' +
-            '<td class="nowrap"><b>#' + x.no + '</b></td>' +
-            '<td>' + (x.type === 'manual' ? '<span class="pill warn">手动</span>' : '<span class="pill muted">自动</span>') + '</td>' +
-            '<td class="nowrap" style="font-size:11.5px">' + fmtDateTime(x.at) + '</td>' +
-            '<td class="tr">' + (x.size / 1024 / 1024).toFixed(2) + ' MB</td>' +
-            '<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;color:var(--muted-2)">' + esc(x.cloudPath || x.name) + '</td>' +
-            '<td class="nowrap">' +
-              '<button class="btn sm primary" data-action="cloud-restore" data-no="' + x.no + '">恢复</button> ' +
-              '<button class="btn sm secondary" data-action="cloud-download" data-no="' + x.no + '">下载</button> ' +
-              '<button class="icon-btn" data-action="cloud-verify" data-no="' + x.no + '" title="校验">' + icon('check', 14) + '</button>' +
-              '<button class="icon-btn danger" data-action="cloud-del-version" data-no="' + x.no + '" title="删除">' + icon('trash', 14) + '</button>' +
-            '</td></tr>').join('') +
-          '</tbody></table></div>';
-      })()}
-    </div>
+    <div class="card-bd flush" id="bk-versions">${backupVersionsHTML()}</div>
   </div>`;
+}
+
+/* 版本池内容单独抽出来：只刷新这一块，避免整页重绘（整页重绘会重置表单焦点） */
+function backupVersionsHTML() {
+  const MAXV = 7;
+  if (!UI.backupVersionsLoaded) {
+    return `<div style="padding:28px;text-align:center;color:var(--muted);font-size:13px">正在读取版本列表…</div>`;
+  }
+  const list = UI.backupVersions || [];
+  if (!list.length) return emptyState({ ico: 'upload', title: '还没有备份版本', desc: '配置云盘后点「立即备份到云盘」，或开启自动备份' });
+  return '<div class="table-wrap"><table class="tbl"><thead><tr>' +
+    '<th style="width:56px">版本</th><th style="width:70px">类型</th><th style="width:150px">备份时间</th>' +
+    '<th class="tr" style="width:100px">大小</th><th>云盘位置</th><th style="width:190px">操作</th></tr></thead><tbody>' +
+    list.map(x => '<tr>' +
+      '<td class="nowrap"><b>#' + x.no + '</b></td>' +
+      '<td>' + (x.type === 'manual' ? '<span class="pill warn">手动</span>' : '<span class="pill muted">自动</span>') + '</td>' +
+      '<td class="nowrap" style="font-size:11.5px">' + fmtDateTime(x.at) + '</td>' +
+      '<td class="tr">' + (x.size / 1024 / 1024).toFixed(2) + ' MB</td>' +
+      '<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;color:var(--muted-2)">' + esc(x.cloudPath || x.name) + '</td>' +
+      '<td class="nowrap">' +
+        '<button class="btn sm primary" data-action="cloud-restore" data-no="' + x.no + '">恢复</button> ' +
+        '<button class="btn sm secondary" data-action="cloud-download" data-no="' + x.no + '">下载</button> ' +
+        '<button class="icon-btn" data-action="cloud-verify" data-no="' + x.no + '" title="校验">' + icon('check', 14) + '</button>' +
+        '<button class="icon-btn danger" data-action="cloud-del-version" data-no="' + x.no + '" title="删除">' + icon('trash', 14) + '</button>' +
+      '</td></tr>').join('') +
+    '</tbody></table></div>';
+}
+
+/* 只更新版本池与计数，不触发整页 renderView（否则会与取数形成循环） */
+function refreshBackupVersions() {
+  const box = $('#bk-versions');
+  if (box) box.innerHTML = backupVersionsHTML();
+  const cnt = $('#bk-ver-count');
+  if (cnt) cnt.textContent = `当前 ${(UI.backupVersions || []).length} / 7`;
 }
