@@ -1,6 +1,6 @@
 {
   "name": "fund-ledger",
-  "version": "4.9.1",
+  "version": "5.0.0",
   "description": "资金台账 — 多公司现金与银行账户资金管理（集团合并）",
   "author": "小刘",
   "license": "UNLICENSED",
@@ -65,6 +65,18 @@
       {
         "from": "assets/manual.html",
         "to": "操作手册.html"
+      },
+      {
+        "from": "开发交接说明.md",
+        "to": "开发交接说明.md"
+      },
+      {
+        "from": "需求解读与实施方案.md",
+        "to": "需求解读与实施方案.md"
+      },
+      {
+        "from": "打包与发布说明.md",
+        "to": "打包与发布说明.md"
       },
       {
         "from": "build/icon.png",

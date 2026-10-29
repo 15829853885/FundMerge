@@ -5,7 +5,7 @@
 
 'use strict';
 
-const APP_VERSION = '4.9.1';
+const APP_VERSION = '5.0.0';
 const APP_NAME = '合资金账';
 const APP_NAME_EN = 'FundMerge';
 const STORE_KEY = 'fund-ledger-v2';
@@ -65,6 +65,59 @@ function fmtShort(n) {
   if (a >= 1e8) return s + curSymbol() + trimZero((a / 1e8).toFixed(2)) + '亿';
   if (a >= 1e4) return s + curSymbol() + trimZero((a / 1e4).toFixed(1)) + '万';
   return s + curSymbol() + Math.round(a).toLocaleString('en-US');
+}
+
+/* -------------------------------- 多币种（REQ-22） -------------------------------- */
+
+/* 本位币：meta.fx.base 优先，回落到旧的 meta.currency */
+const baseCurrency = () => {
+  const m = (DB && DB.meta) || {};
+  if (m.fx && CURRENCIES[m.fx.base]) return m.fx.base;
+  return CURRENCIES[m.currency] ? m.currency : 'GHS';
+};
+
+/* 账户币种：账户自身币种，非法值回落本位币 */
+const accCurrency = a => (a && CURRENCIES[a.currency]) ? a.currency : baseCurrency();
+
+/* 汇率表：{ USD: [{date, rate, by, byName, at, note}] }，rate = 1 原币 → N 本位币 */
+function fxList(cur) {
+  const m = (DB && DB.meta) || {};
+  const rates = (m.fx && m.fx.rates) || {};
+  return Array.isArray(rates[cur]) ? rates[cur] : [];
+}
+
+/* 取 date <= at 的最新一条；没有记录返回 null（表示「缺汇率」，绝不按 1:1 兜底） */
+function baseRate(cur, at) {
+  const base = baseCurrency();
+  if (!cur || cur === base) return 1;
+  const list = fxList(cur);
+  if (!list.length) return null;
+  const d = at || todayISO();
+  let best = null;
+  for (const r of list) {
+    if (r.date && r.date > d) continue;
+    if (!best || String(r.date || '') > String(best.date || '')) best = r;
+  }
+  if (!best) best = list.slice().sort((a, b) => String(a.date).localeCompare(String(b.date)))[0];
+  return best && num(best.rate) > 0 ? num(best.rate) : null;
+}
+
+const toBase = (n, cur, at) => { const r = baseRate(cur, at); return r == null ? null : round2(num(n) * r); };
+
+function fmtCur(n, cur) {
+  const c = CURRENCIES[cur] || CUR();
+  const v = round2(n);
+  return (v < 0 ? '-' : '') + c.symbol + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/* 需要折算但缺汇率的币种清单（用于页面提示） */
+function missingRateCurrencies() {
+  const set = new Set();
+  (DB && DB.companies || []).forEach(co => (co.accounts || []).forEach(a => {
+    const cur = accCurrency(a);
+    if (cur !== baseCurrency() && baseRate(cur) == null) set.add(cur);
+  }));
+  return [...set];
 }
 
 /* ---------------------------------- 图标 ---------------------------------- */
@@ -239,6 +292,8 @@ function normalizeProfile(p) {
       value: String(f.value ?? ''),
       type: ['text', 'password', 'url'].includes(f.type) ? f.type : 'text',
       note: String(f.note || ''),
+      bundle: String(f.bundle || ''),
+      bundleTitle: String(f.bundleTitle || ''),
       updatedAt: f.updatedAt || ''
     }));
   o.files = (Array.isArray(o.files) ? o.files : [])
@@ -286,6 +341,7 @@ function defaultDB() {
     version: 3,
     meta: {
       currency: 'GHS', groupName: '', activeCompanyId: co.id, createdAt: new Date().toISOString(),
+      fx: { base: 'GHS', rates: {} },
       voucherRule: { reset: 'month', seqLen: 4 }
     },
     users: [],
@@ -296,7 +352,7 @@ function defaultDB() {
 
 /* ---------------------------------- 存储 ---------------------------------- */
 
-function normalizeCompany(c, idx) {
+function normalizeCompany(c, idx, base) {
   c.id = c.id || uid('co');
   c.name = String(c.name || '未命名公司').trim() || '未命名公司';
   c.shortName = c.shortName || '';
@@ -326,6 +382,7 @@ function normalizeCompany(c, idx) {
 
   c.accounts.forEach(a => {
     a.type = a.type === 'cash' ? 'cash' : 'bank';
+    a.currency = CURRENCIES[a.currency] ? a.currency : (base || 'GHS');
     a.openingBalance = num(a.openingBalance);
     a.openingDate = a.openingDate || todayISO();
     a.active = a.active !== false;
@@ -368,6 +425,21 @@ function normalize(raw) {
   d.version = 3;
   d.meta = Object.assign({ currency: 'GHS', groupName: '' }, d.meta || {});
   if (!CURRENCIES[d.meta.currency]) d.meta.currency = 'GHS';
+  /* 多币种（REQ-22）：本位币 + 汇率表，老数据自动补默认值 */
+  if (!d.meta.fx || typeof d.meta.fx !== 'object') d.meta.fx = { base: d.meta.currency, rates: {} };
+  if (!CURRENCIES[d.meta.fx.base]) d.meta.fx.base = d.meta.currency;
+  if (!d.meta.fx.rates || typeof d.meta.fx.rates !== 'object') d.meta.fx.rates = {};
+  Object.keys(d.meta.fx.rates).forEach(k => {
+    const arr = d.meta.fx.rates[k];
+    d.meta.fx.rates[k] = (Array.isArray(arr) ? arr : []).filter(r => r && num(r.rate) > 0).map(r => ({
+      date: String(r.date || todayISO()),
+      rate: num(r.rate),
+      by: r.by || '',
+      byName: r.byName || '',
+      at: r.at || new Date().toISOString(),
+      note: String(r.note || '')
+    }));
+  });
   d.meta.groupName = String(d.meta.groupName || '').trim();
   d.users = Array.isArray(d.users) ? d.users : [];
   d.users.forEach(u => {
@@ -397,7 +469,7 @@ function normalize(raw) {
 
   d.companies = d.companies
     .filter(c => c && typeof c === 'object')
-    .map((c, i) => normalizeCompany(c, i));
+    .map((c, i) => normalizeCompany(c, i, d.meta.fx.base));
 
   COMPANY_KEYS.forEach(k => { delete d[k]; });
   delete d.meta.company;
@@ -449,7 +521,7 @@ async function loadDB() {
 
   const rawVersion = raw && typeof raw === 'object' ? (raw.version || 1) : 0;
   DB = normalize(raw || defaultDB());
-  CURRENCY = DB.meta.currency;
+  CURRENCY = baseCurrency();
   attachCompanyProxy(DB);
   COMPANY = activeCompany();
 
@@ -580,8 +652,14 @@ async function resetPasswordBySecurity(username, answers, newPassword) {
 const findUserByName = name =>
   DB.users.find(x => x.username.toLowerCase() === String(name || '').trim().toLowerCase());
 
-async function verifyLogin(username, password) {
-  const u = DB.users.find(x => x.username.toLowerCase() === String(username).trim().toLowerCase());
+/* 校验「当前登录用户」的密码（不更新 lastLogin，用于高危操作的二次身份确认） */
+async function verifyCurrentPassword(pw) {
+  const u = DB.users.find(x => x.id === (SESSION || {}).id);
+  if (!u || !u.salt || !u.hash) return false;
+  return (await hashPassword(String(pw || ''), u.salt)) === u.hash;
+}
+
+async function verifyLogin(username, password) {  const u = DB.users.find(x => x.username.toLowerCase() === String(username).trim().toLowerCase());
   if (!u) return { ok: false, error: '账号不存在' };
   if (u.active === false) return { ok: false, error: '该账号已被停用，请联系管理员' };
   const hash = await hashPassword(password, u.salt);
@@ -651,7 +729,18 @@ function balanceOf(acc, upto, co = COMPANY) {
 }
 
 const totalBalance = (upto, co = COMPANY) =>
-  round2((co ? co.accounts : []).reduce((s, a) => s + balanceOf(a, upto, co), 0));
+  round2((co ? co.accounts : []).reduce((s, a) => {
+    const v = toBase(balanceOf(a, upto, co), accCurrency(a), upto);
+    return s + (v == null ? 0 : v);
+  }, 0));
+
+/* 单笔流水的本位币金额（多币种）：按发生日汇率折算，缺汇率按 0 计并已由页面提示 */
+function txBase(t, co = COMPANY) {
+  const acc = accById(t.accountId, co) || (t.fundedAccountId ? accById(t.fundedAccountId, co) : null);
+  const cur = acc ? accCurrency(acc) : baseCurrency();
+  const v = toBase(t.amount, cur, t.date);
+  return v == null ? 0 : v;
+}
 
 function rangeStats(from, to, co = COMPANY) {
   const r = { inflow: 0, outflow: 0, transfer: 0, count: 0 };
@@ -660,9 +749,10 @@ function rangeStats(from, to, co = COMPANY) {
     if (to && t.date > to) continue;
     if (t.noCash) continue;
     r.count++;
-    if (t.type === 'in') r.inflow += num(t.amount);
-    else if (t.type === 'out') r.outflow += num(t.amount);
-    else r.transfer += num(t.amount);
+    const amt = txBase(t, co);
+    if (t.type === 'in') r.inflow += amt;
+    else if (t.type === 'out') r.outflow += amt;
+    else r.transfer += amt;
   }
   r.inflow = round2(r.inflow);
   r.outflow = round2(r.outflow);
@@ -707,10 +797,10 @@ function cashFlow(from, to, co = COMPANY) {
     if (!c.cf || c.cf === 'none') continue;
     const row = byKey.get(c.cf);
     if (!row) continue;
-    row.amount += num(t.amount);
+    row.amount += txBase(t, co);
     const k = c.id || c.name;
     if (!catAgg.has(k)) catAgg.set(k, { name: c.name, color: c.color, icon: c.icon, cf: c.cf, amount: 0 });
-    catAgg.get(k).amount += num(t.amount);
+    catAgg.get(k).amount += txBase(t, co);
   }
   rows.forEach(r => { r.amount = round2(r.amount); });
   [...catAgg.values()].forEach(d => {
@@ -775,7 +865,7 @@ function budgetRows(month, co = COMPANY) {
   const used = new Map();
   (co ? co.transactions : []).forEach(t => {
     if (t.type !== 'out' || monthOf(t.date) !== month) return;
-    used.set(t.categoryId, (used.get(t.categoryId) || 0) + num(t.amount));
+    used.set(t.categoryId, (used.get(t.categoryId) || 0) + txBase(t, co));
   });
   return cats.map(c => {
     const b = (co ? co.budgets : []).find(x => x.month === month && x.categoryId === c.id);
@@ -800,21 +890,55 @@ function budgetSummary(month, co = COMPANY) {
 
 /* -------------------------------- 集团汇总 -------------------------------- */
 
-/* 某公司在某日期的资金合计（转账不改变总额，可单循环计算） */
+/* 某公司在某日期的资金合计（转账不改变总额，可单循环计算）
+   noCash 流水代表「这笔钱不是本公司出的」（集团代付的镜像分录，accountId 为空），
+   它不进任何账户余额，也不该进公司资金合计，否则集团合并会凭空少掉一倍代付额。 */
 function companyBalanceAt(co, upto) {
-  let b = co.accounts.reduce((s, a) => s + num(a.openingBalance), 0);
-  for (const t of co.transactions) {
+  /* 单遍扫描 + 按账户币种分桶，再统一折本位币。
+     不能逐账户调 balanceOf：那是 O(流水 × 账户)，趋势图跑 200 个点会卡死。
+     noCash 流水（accountId 为空）天然不入桶，顺带解决集团代付多扣一倍的问题。 */
+  const base = baseCurrency();
+  const buckets = {};
+  (co.accounts || []).forEach(a => {
+    const cur = accCurrency(a);
+    buckets[cur] = (buckets[cur] || 0) + num(a.openingBalance);
+  });
+  const accCur = new Map((co.accounts || []).map(a => [a.id, accCurrency(a)]));
+  for (const t of (co.transactions || [])) {
     if (upto && t.date > upto) continue;
-    if (t.type === 'in') b += num(t.amount);
-    else if (t.type === 'out') b -= num(t.amount);
+    if (t.noCash) continue;
+    if (t.type !== 'in' && t.type !== 'out') continue;
+    const cur = accCur.get(t.accountId) || base;
+    buckets[cur] = (buckets[cur] || 0) + (t.type === 'in' ? num(t.amount) : -num(t.amount));
   }
-  return round2(b);
+  let total = 0;
+  Object.keys(buckets).forEach(cur => {
+    const r = baseRate(cur, upto);
+    if (r == null) return;            // 缺汇率：不计入，由调用方提示
+    total += buckets[cur] * r;
+  });
+  return round2(total);
 }
 
 function companyTotals(co, upto) {
   const total = companyBalanceAt(co, upto);
-  const cash = round2(co.accounts.filter(a => a.type === 'cash').reduce((s, a) => s + balanceOf(a, upto, co), 0));
-  return { total, cash, bank: round2(total - cash) };
+  const byCurrency = {};
+  let missing = [];
+  (co.accounts || []).forEach(a => {
+    const cur = accCurrency(a);
+    const v = balanceOf(a, upto, co);
+    byCurrency[cur] = round2((byCurrency[cur] || 0) + v);
+    if (cur !== baseCurrency() && baseRate(cur, upto) == null && !missing.includes(cur)) missing.push(cur);
+  });
+  const cash = round2((co.accounts || []).filter(a => a.type === 'cash').reduce((s, a) => {
+    const v = toBase(balanceOf(a, upto, co), accCurrency(a), upto);
+    return s + (v == null ? 0 : v);
+  }, 0));
+  /* 往来口径：借出未收 = 应收；借入未还 + 员工未报销 = 应付。
+     早期版本漏了这两个字段，导致「往来账款净额」下钻恒为 NaN。 */
+  const receivable = debtTotals('lend', co).remaining;
+  const payable = round2(debtTotals('borrow', co).remaining + debtTotals('reimburse', co).remaining);
+  return { total, cash, bank: round2(total - cash), receivable, payable, byCurrency, missing };
 }
 
 function groupTotals(upto) {
@@ -837,7 +961,7 @@ function groupSeries(from, to) {
   const step = total > 400 ? Math.ceil(total / 200) : 1;
   const pts = [];
   let d = from;
-  const at = date => round2(DB.companies.reduce((s, co) => s + companyBalanceAt(co, date), 0));
+  const at = date => round2(accountingCompanies().reduce((s, co) => s + companyBalanceAt(co, date), 0));
   while (d <= to) {
     pts.push({ label: d, value: at(d) });
     d = addDays(d, step);
@@ -849,7 +973,7 @@ function groupSeries(from, to) {
 function groupCashFlow(from, to) {
   const rows = CF_ITEMS.map(i => ({ ...i, amount: 0, detail: [] }));
   const byKey = new Map(rows.map(r => [r.key, r]));
-  DB.companies.forEach(co => {
+  accountingCompanies().forEach(co => {
     const one = cashFlow(from, to, co);
     one.rows.forEach(r => {
       const target = byKey.get(r.key);
@@ -870,7 +994,7 @@ function groupCashFlow(from, to) {
     act[k].net = round2(act[k].in - act[k].out);
   });
   const netTotal = round2(act.op.net + act.inv.net + act.fin.net);
-  const beginCash = round2(DB.companies.reduce((s, co) => s + companyBalanceAt(co, addDays(from, -1)), 0));
+  const beginCash = round2(accountingCompanies().reduce((s, co) => s + companyBalanceAt(co, addDays(from, -1)), 0));
   return { rows, act, netTotal, beginCash, endCash: round2(beginCash + netTotal), from, to };
 }
 
@@ -1172,7 +1296,9 @@ function txAccountLabel(t, co = COMPANY) {
 const MASTER_ACCOUNT = { username: 'owner', displayName: '管理员' };
 
 async function ensureMasterAccount() {
-  const exist = DB.users.find(u => u.username === MASTER_ACCOUNT.username);
+  /* 先按 builtin 标记找人。首启页允许把账号从 owner 改成自定义名，
+     旧逻辑只按 username 找，改名后下次启动就找不到 → 又建一个 builtin → 首启页反复弹。 */
+  const exist = DB.users.find(u => u.builtin) || DB.users.find(u => u.username === MASTER_ACCOUNT.username);
   if (exist) {
     let dirty = false;
     if (exist.role !== 'admin') { exist.role = 'admin'; dirty = true; }
@@ -1297,9 +1423,16 @@ function ensureAdvanceList(co) {
   return co.advances;
 }
 function advanceInfo(a) {
-  const used = num(a.usedAmount);
   const total = num(a.amount);
-  return { used, remain: round2(total - used), over: used > total + 0.005, status: a.status || 'pending' };
+  const draws = Array.isArray(a.draws) ? a.draws : [];
+  /* 已用 = 各次核销的实际使用额；退回的部分同样占用借支额度，否则余额会永远挂着 */
+  const used = draws.length ? round2(draws.reduce((s, d) => s + num(d.used), 0)) : num(a.usedAmount);
+  const back = draws.length ? round2(draws.reduce((s, d) => s + num(d.back), 0)) : 0;
+  const remain = round2(total - used - back);
+  const over = used + back > total + 0.005;
+  let status = a.status || 'pending';
+  if (status !== 'pending') status = remain <= 0.005 ? 'closed' : 'issued';
+  return { used, back, remain, over, status, drawCount: draws.length };
 }
 
 /* ---------- 票据未回 ---------- */
@@ -1335,7 +1468,7 @@ function projectUsage(projectId, co = COMPANY) {
   (co.transactions || []).forEach(t => {
     if (t.projectId !== projectId) return;
     count++;
-    if (t.type === 'out') out += num(t.amount);
+    if (t.type === 'out') out += txBase(t, co);
     else if (t.type === 'in') inn += num(t.amount);
   });
   return { out: round2(out), in: round2(inn), count };
@@ -1344,30 +1477,43 @@ function projectUsage(projectId, co = COMPANY) {
 /* 总公司登记方式：company=作为独立公司参与核算；registry=仅作集团登记主体 */
 const parentMode = () => (DB.meta.parentMode === 'registry' ? 'registry' : 'company');
 
-/* 参与核算的公司（registry 模式下排除总公司） */
+/* 参与核算的公司（registry 模式下排除总公司）
+   注意：没有成员公司时返回空集，不再回落成"全部公司"。
+   旧写法 `list.length ? list : DB.companies` 会把「集团下没有成员」伪装成
+   「全部参与合并」，用户看到的合计是错的，且没有任何提示。 */
 function accountingCompanies() {
-  if (parentMode() === 'registry') {
-    const list = DB.companies.filter(c => !c.isParent);
-    return list.length ? list : DB.companies;
-  }
+  if (parentMode() === 'registry') return DB.companies.filter(c => !c.isParent);
   return DB.companies;
 }
+
+/* 集团总公司（全库唯一，可能为空） */
+const groupHQ = () => (DB.companies || []).find(c => c.isParent) || null;
 
 /* 下钻：某个集团指标在各公司的构成 */
 const DRILL_METRICS = {
   total: '集团资金总额',
   cash: '集团库存现金',
   bank: '集团银行存款',
-  net: '往来账款净额'
+  net: '往来账款净额',
+  lend: '集团应收合计',
+  pay: '集团应付合计',
+  monthIn: '本月集团流入',
+  monthOut: '本月集团流出'
 };
 
 function drillRows(metric) {
+  const today = todayISO();
+  const thisM = monthOf(today);
   return accountingCompanies().map(co => {
     const t = companyTotals(co);
     let value = t.total;
     if (metric === 'cash') value = t.cash;
     else if (metric === 'bank') value = t.bank;
     else if (metric === 'net') value = round2(t.receivable - t.payable);
+    else if (metric === 'lend') value = t.receivable;
+    else if (metric === 'pay') value = t.payable;
+    else if (metric === 'monthIn') value = rangeStats(thisM + '-01', today, co).inflow;
+    else if (metric === 'monthOut') value = rangeStats(thisM + '-01', today, co).outflow;
     return { co, value, totals: t };
   }).sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
 }
@@ -1396,7 +1542,7 @@ function budgetHistory(categoryId, lookback, endMonth) {
     m = monthOf(addDays(m + '-01', -1));
     const spent = round2(COMPANY.transactions
       .filter(t => t.type === 'out' && t.categoryId === categoryId && monthOf(t.date) === m)
-      .reduce((s, t) => s + num(t.amount), 0));
+      .reduce((s, t) => s + txBase(t, COMPANY), 0));
     out.unshift({ month: m, spent });
   }
   return out;

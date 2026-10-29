@@ -13,8 +13,8 @@
   --ink:         #0f172a;
   --ink-2:       #334155;
   --ink-3:       #475569;
-  --muted:       #64748b;
-  --muted-2:     #94a3b8;
+  --muted:       #5b6b80;
+  --muted-2:     #6b7a90;
 
   /* 主色 */
   --brand:       #4f46e5;
@@ -1380,8 +1380,8 @@ table.tbl tbody tr { transition: background var(--dur-1) var(--ease-soft); }
   --ink:         #e9eefb;
   --ink-2:       #c6d1e2;
   --ink-3:       #a7b5c9;
-  --muted:       #8b9ab3;
-  --muted-2:     #6f7f99;
+  --muted:       #a3b1c7;
+  --muted-2:     #93a3bd;
   --brand:       #6366f1;
   --brand-600:   #818cf8;
   --brand-soft:  rgba(99, 102, 241, .16);
@@ -1805,3 +1805,8 @@ table.tbl tbody tr:last-child td { border-bottom: 0; }
   display: flex; align-items: center; justify-content: center; gap: 5px;
   margin-top: 12px; font-size: 11px; color: var(--muted-2);
 }
+
+/* ===== 环形图交互（REQ-10）：悬停放大并高亮，中心显示对应明细 ===== */
+.dseg { transition: stroke-width .16s ease, opacity .16s ease; cursor: pointer; }
+.dseg:hover { stroke-width: 27; }
+.donut-wrap:has(.dseg:hover) .dseg:not(:hover) { opacity: .3; }

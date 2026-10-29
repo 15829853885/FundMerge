@@ -1,4 +1,4 @@
-# ---- 系统与编辑器 ----
+﻿# ---- 系统与编辑器 ----
 Thumbs.db
 desktop.ini
 .DS_Store
@@ -20,7 +20,7 @@ desktop.ini
 
 # ---- 免安装版的解包目录：仓库里只留 zip ----
 # 358MB / 77 个文件，逐个入库没有意义；解压即可得
-02-免安装版/FundMerge-4.9.2-portable/
+02-免安装版/合资金账-5.0.0-portable/
 
 # ---- 构建中间产物 ----
 node_modules/

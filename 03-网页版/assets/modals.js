@@ -71,6 +71,12 @@ function openTxModal(id, opts) {
               <input type="number" name="amount" min="0.01" step="0.01" inputmode="decimal" value="${tx ? tx.amount : ''}" placeholder="0.00" required>
             </div>
           </label>
+          <label class="field hidden" data-role="to-amount"><span class="lbl">到账金额（转入账户币种）</span>
+            <div class="input-affix"><span class="prefix" data-role="to-cur"></span>
+              <input type="number" name="toAmount" min="0.01" step="0.01" inputmode="decimal"
+                     value="${tx && tx.toAmount != null ? tx.toAmount : ''}" placeholder="按汇率自动换算">
+            </div>
+          </label>
           <div class="field" data-role="cat-field"><span class="lbl">分类</span><div id="cat-holder">${categoryPickerHTML({ value: catId, kind: type === 'transfer' ? 'out' : type })}</div></div>
           <label class="field"><span class="lbl">往来单位 / 对方</span><input type="text" name="counterparty" value="${tx ? esc(tx.counterparty || '') : ''}" placeholder="客户、供应商、员工"></label>
           <label class="field"><span class="lbl">凭证号</span>
@@ -80,7 +86,7 @@ function openTxModal(id, opts) {
             </div>
           </label>
           <label class="field span-2"><span class="lbl">摘要</span><input type="text" name="summary" value="${tx ? esc(tx.summary || '') : ''}" placeholder="这笔钱是做什么的"></label>
-          <label class="field"><span class="lbl">归属项目</span>
+          <label class="field" data-role="project-field"><span class="lbl">归属项目</span>
             <select name="projectId">
               <option value="">不归属项目</option>
               ${ensureProjectList(COMPANY).filter(p => (p.status || 'active') !== 'done').map(p =>
@@ -115,13 +121,40 @@ function openTxModal(id, opts) {
     $('[data-role=to-acc]', form).classList.toggle('hidden', t !== 'transfer');
     $('[data-role=acc-label]', form).textContent = t === 'in' ? '收款账户' : t === 'out' ? '付款账户' : '转出账户';
     $('[data-role=cat-field]', form).classList.toggle('hidden', t === 'transfer');
+    const pf = $('[data-role=project-field]', form);
+    if (pf) pf.classList.toggle('hidden', t === 'transfer');
     holder.innerHTML = categoryPickerHTML({ value: '', kind: t === 'transfer' ? 'out' : t });
     form.elements.accountId.innerHTML = accOpt(usable[0].id, t === 'out');
     updateHint();
   };
 
-  $$('.seg-btn', seg).forEach(b => b.addEventListener('click', () => setType(b.dataset.txtype)));
-  form.elements.accountId.addEventListener('change', updateHint);
+  /* 跨币种转账：转入账户按目标币种入账，金额需单独确认（R-02） */
+  const toAmtField = $('[data-role=to-amount]', form);
+  const accIdOf = v => String(v || '').indexOf('gp:') === 0 ? String(v).slice(3) : String(v || '');
+  const syncToAmount = () => {
+    const t = form.dataset.type;
+    const fromAcc = accById(accIdOf(form.elements.accountId.value));
+    const toRawV = String(form.elements.toAccountId.value || '');
+    const toAcc = toRawV.indexOf('co:') === 0 ? null : accById(toRawV);
+    const cross = t === 'transfer' && !!fromAcc && !!toAcc && accCurrency(fromAcc) !== accCurrency(toAcc);
+    if (!toAmtField) return;
+    toAmtField.classList.toggle('hidden', !cross);
+    if (!cross) { if (form.elements.toAmount) form.elements.toAmount.value = ''; return; }
+    const curEl = $('[data-role=to-cur]', form);
+    if (curEl) curEl.textContent = (CURRENCIES[accCurrency(toAcc)] || {}).symbol || '';
+    const amt = round2(num(form.elements.amount.value));
+    const r1 = baseRate(accCurrency(fromAcc), form.elements.date.value);
+    const r2 = baseRate(accCurrency(toAcc), form.elements.date.value);
+    if (amt > 0 && r1 != null && r2 != null && form.elements.toAmount) {
+      form.elements.toAmount.value = round2(amt * r1 / r2);
+    }
+  };
+
+  $$('.seg-btn', seg).forEach(b => b.addEventListener('click', () => { setType(b.dataset.txtype); syncToAmount(); }));
+  form.elements.accountId.addEventListener('change', () => { updateHint(); syncToAmount(); });
+  if (form.elements.toAccountId) form.elements.toAccountId.addEventListener('change', syncToAmount);
+  form.elements.amount.addEventListener('input', syncToAmount);
+  syncToAmount();
   form.dataset.type = type;
   updateHint();
   setTimeout(() => form.elements.amount.focus(), 60);
@@ -207,6 +240,7 @@ function openTxModal(id, opts) {
       type: t,
       toAccountId: t === 'transfer' ? toRaw : '',
       amount,
+      toAmount: (t === 'transfer' && num(fd.get('toAmount')) > 0) ? round2(num(fd.get('toAmount'))) : '',
       categoryId: t === 'transfer' ? '' : fd.get('categoryId'),
       category: t === 'transfer' ? '内部转账' : (catById(fd.get('categoryId')) || {}).name || ''
     });
@@ -227,25 +261,38 @@ function openTxModal(id, opts) {
     }
 
     const beforeSnapshot = isEdit ? `${tx.date} ${tx.category} ${fmt(tx.amount)} ${tx.summary || ''}` : '';
-    let saved;
-    if (isEdit) { Object.assign(tx, data); saved = tx; }
-    else {
-      saved = Object.assign({ id: uid('t'), createdAt: new Date().toISOString() }, data);
-      DB.transactions.push(saved);
-    }
 
-    if (!saved.voucherNo) saved.voucherNo = nextVoucherNo(saved.type, saved.date);
+    /* 编辑保存前必须二次确认（新增不弹） */
+    const commit = () => {
+      let saved;
+      if (isEdit) { Object.assign(tx, data); saved = tx; }
+      else {
+        saved = Object.assign({ id: uid('t'), createdAt: new Date().toISOString() }, data);
+        DB.transactions.push(saved);
+      }
 
-    syncGroupMirror(saved, COMPANY);
-    logAction(isEdit ? '修改' : '新增', {
-      module: '流水',
-      target: `${saved.category || saved.type} ${fmt(saved.amount)}`,
-      targetId: saved.id,
-      before: isEdit ? beforeSnapshot : '',
-      after: `${saved.date} ${saved.category} ${fmt(saved.amount)} ${saved.summary || ''}`
+      if (!saved.voucherNo) saved.voucherNo = nextVoucherNo(saved.type, saved.date);
+
+      syncGroupMirror(saved, COMPANY);
+      logAction(isEdit ? '修改' : '新增', {
+        module: '流水',
+        target: `${saved.category || saved.type} ${fmt(saved.amount)}`,
+        targetId: saved.id,
+        before: isEdit ? beforeSnapshot : '',
+        after: `${saved.date} ${saved.category} ${fmt(saved.amount)} ${saved.summary || ''}`
+      });
+      saveDB(); closeModal(); render();
+      toast(isEdit ? '已保存修改' : `已记录${txTypeLabel(saved)} ${fmt(amount)}`, 'ok');
+    };
+
+    if (!isEdit) return commit();
+    guardChange({
+      title: '确认修改这笔流水？',
+      message: `将把<br><b>${esc(beforeSnapshot)}</b><br>改为<br><b>${esc(`${data.date} ${data.category} ${fmt(amount)} ${data.summary || ''}`)}</b><br><br>相关账户余额会同步重算。`,
+      confirmText: '确认修改',
+      level: 'code',
+      onConfirm: () => { closeModal(); commit(); }
     });
-    saveDB(); closeModal(); render();
-    toast(isEdit ? '已保存修改' : `已记录${txTypeLabel(saved)} ${fmt(amount)}`, 'ok');
   });
 }
 
@@ -270,7 +317,12 @@ function openAccountModal(id) {
           </label>
           <label class="field"><span class="lbl">开户行</span><input type="text" name="bankName" value="${a ? esc(a.bankName || '') : ''}" placeholder="如：Ecobank Ghana"></label>
           <label class="field span-2"><span class="lbl">银行账号</span><input type="text" name="accountNo" value="${a ? esc(a.accountNo || '') : ''}" placeholder="可选"></label>
-          <label class="field"><span class="lbl">期初余额</span>
+          <label class="field"><span class="lbl">账户币种</span>
+            <select name="currency">
+              ${Object.keys(CURRENCIES).map(k => `<option value="${k}" ${(a ? accCurrency(a) : baseCurrency()) === k ? 'selected' : ''}>${CURRENCIES[k].name}（${CURRENCIES[k].symbol}）</option>`).join('')}
+            </select>
+          </label>
+          <label class="field"><span class="lbl">期初余额（按账户币种）</span>
             <div class="input-affix"><span class="prefix">${curSymbol()}</span>
               <input type="number" name="openingBalance" step="0.01" inputmode="decimal" value="${a ? a.openingBalance : '0.00'}">
             </div>
@@ -300,15 +352,27 @@ function openAccountModal(id) {
       type: fd.get('type') === 'cash' ? 'cash' : 'bank',
       bankName: String(fd.get('bankName') || '').trim(),
       accountNo: String(fd.get('accountNo') || '').trim(),
+      currency: CURRENCIES[fd.get('currency')] ? fd.get('currency') : baseCurrency(),
       openingBalance: round2(num(fd.get('openingBalance'))),
       openingDate: fd.get('openingDate') || todayISO(),
       note: String(fd.get('note') || '').trim(),
       active: fd.get('active') === 'on'
     };
-    if (isEdit) Object.assign(a, data);
-    else DB.accounts.push(Object.assign({ id: uid('a'), createdAt: new Date().toISOString() }, data));
-    saveDB(); closeModal(); render();
-    toast(isEdit ? '账户已更新' : '账户已创建', 'ok');
+    const commit = () => {
+      if (isEdit) Object.assign(a, data);
+      else DB.accounts.push(Object.assign({ id: uid('a'), createdAt: new Date().toISOString() }, data));
+      saveDB(); closeModal(); render();
+      toast(isEdit ? '账户已更新' : '账户已创建', 'ok');
+    };
+    if (!isEdit) return commit();
+    /* 期初余额变动会改变全部历史余额，属高风险修改 */
+    guardChange({
+      title: '确认修改账户？',
+      message: `「${esc(a.name)}」的期初余额将由 <b>${fmt(a.openingBalance)}</b> 改为 <b>${fmt(data.openingBalance)}</b>，<br>该账户所有历史余额都会重算。`,
+      confirmText: '确认修改',
+      level: data.openingBalance !== a.openingBalance ? 'code' : 'plain',
+      onConfirm: () => { closeModal(); commit(); }
+    });
   });
 }
 
@@ -410,6 +474,11 @@ function openDebtModal(id, presetType) {
               <input type="number" name="amount" min="0.01" step="0.01" value="${d ? d.amount : ''}" placeholder="0.00" required>
             </div>
           </label>
+          <label class="field"><span class="lbl">计价币种</span>
+            <select name="currency">
+              ${Object.keys(CURRENCIES).map(k => `<option value="${k}" ${(d ? (d.currency || baseCurrency()) : baseCurrency()) === k ? 'selected' : ''}>${CURRENCIES[k].name}（${CURRENCIES[k].symbol}）</option>`).join('')}
+            </select>
+          </label>
           <label class="field"><span class="lbl">发生日期</span><input type="date" name="date" value="${d ? d.date : todayISO()}"></label>
           <label class="field"><span class="lbl">约定结清日期</span><input type="date" name="dueDate" value="${d ? (d.dueDate || '') : ''}"></label>
           <label class="field" data-role="acct-field"><span class="lbl">资金账户</span>
@@ -459,6 +528,7 @@ function openDebtModal(id, presetType) {
       type: curType,
       party,
       amount,
+      currency: CURRENCIES[fd.get('currency')] ? fd.get('currency') : baseCurrency(),
       date: fd.get('date') || todayISO(),
       dueDate: fd.get('dueDate') || '',
       accountId: curType === 'reimburse' ? '' : (fd.get('accountId') || ''),
@@ -466,9 +536,19 @@ function openDebtModal(id, presetType) {
     };
 
     if (isEdit) {
-      Object.assign(d, data);
-      saveDB(); closeModal(); render();
-      return toast('已保存', 'ok');
+      const changedAmount = round2(num(d.amount)) !== amount;
+      guardChange({
+        title: '确认修改往来款？',
+        message: `「${esc(d.party)}」的金额将由 <b>${fmt(d.amount)}</b> 改为 <b>${fmt(amount)}</b>。${changedAmount ? '<br>已结清金额不变，未结余额会随之变化。' : ''}`,
+        confirmText: '确认修改',
+        level: changedAmount ? 'code' : 'plain',
+        onConfirm: () => {
+          Object.assign(d, data);
+          saveDB(); closeModal(); render();
+          toast('已保存', 'ok');
+        }
+      });
+      return;
     }
 
     const debt = Object.assign({ id: uid('d'), createdAt: new Date().toISOString(), userId: SESSION.id }, data);
@@ -552,6 +632,18 @@ function openSettleModal(debtId) {
     if (!(amount > 0)) return toast('金额必须大于 0', 'err');
     if (amount > info.remaining + 0.001) return toast('金额不能超过未结余额', 'err');
 
+    /* 往来款按计价币种登记，资金流水按账户币种入账，需折算 */
+    const debtCur = d.currency || baseCurrency();
+    const accObj = accById(String(fd.get('accountId') || ''));
+    const accCur = accObj ? accCurrency(accObj) : baseCurrency();
+    let txAmount = amount;
+    if (debtCur !== accCur) {
+      const r1 = baseRate(debtCur, fd.get('date') || todayISO());
+      const r2 = baseRate(accCur, fd.get('date') || todayISO());
+      if (r1 == null || r2 == null) return toast(`缺少 ${debtCur} 或 ${accCur} 的汇率，无法折算，请先到设置里录入`, 'err');
+      txAmount = round2(amount * r1 / r2);
+    }
+
     const catName = d.type === 'lend' ? '往来款收回' : d.type === 'borrow' ? '还款' : '报销付款';
     const kind = d.type === 'lend' ? 'in' : 'out';
     const cat = DB.categories.find(c => c.name === catName && c.kind === kind) || DB.categories.find(c => c.kind === kind);
@@ -563,7 +655,7 @@ function openSettleModal(debtId) {
       type: kind,
       accountId: fd.get('accountId'),
       toAccountId: '',
-      amount,
+      amount: txAmount,
       categoryId: cat ? cat.id : '',
       category: cat ? cat.name : catName,
       counterparty: d.party,
@@ -1028,11 +1120,12 @@ async function exportGroupCSV() {
   const head = ['公司', '期初余额', '本期流入', '本期流出', '期末余额', '库存现金', '银行存款', '应收', '应付', '账户数', '流水笔数'];
   const rows = [];
   const sum = { op: 0, inflow: 0, outflow: 0, close: 0, cash: 0, bank: 0, lend: 0, pay: 0 };
-  DB.companies.forEach(co => {
+  accountingCompanies().forEach(co => {
     const s = rangeStats(from, to, co);
-    const tt = companyTotals(co);
+    /* 与集团报表同源：必须传 to，否则导出的是「今天」口径、页面是区间口径 */
+    const tt = companyTotals(co, to);
     const op = companyBalanceAt(co, addDays(from, -1));
-    const close = round2(op + s.inflow - s.outflow);
+    const close = companyBalanceAt(co, to);
     const lend = debtTotals('lend', co).remaining;
     const pay = round2(debtTotals('borrow', co).remaining + debtTotals('reimburse', co).remaining);
     sum.op += op; sum.inflow += s.inflow; sum.outflow += s.outflow; sum.close += close;
@@ -1051,22 +1144,35 @@ async function exportJSON() {
   if (ok) toast('备份文件已导出', 'ok');
 }
 
+/* 备份文件的合法结构：v3 多公司格式（companies[]）或旧的单公司扁平格式 */
+function importShapeOK(data) {
+  if (!data || typeof data !== 'object') return false;
+  if (Array.isArray(data.companies)) return true;
+  return Array.isArray(data.accounts) && Array.isArray(data.transactions);
+}
+
 function applyImport(data) {
   let next;
   try {
-    if (!data || !Array.isArray(data.accounts) || !Array.isArray(data.transactions)) throw new Error('文件结构不正确');
+    if (!importShapeOK(data)) throw new Error('文件结构不正确（既不是多公司账套，也不是旧版单公司备份）');
     next = normalize(data);
   } catch (err) {
     return toast('导入失败：' + err.message, 'err');
   }
+  /* 统计必须按公司取，不能读 next.accounts —— 那是代理属性，此时还指向旧 DB */
+  const cos = next.companies || [];
+  const cur = cos.find(c => c.id === next.meta.activeCompanyId) || cos[0] || {};
+  const accN = (cur.accounts || []).length;
+  const txN = (cur.transactions || []).length;
+
   confirmDialog({
     title: '恢复备份',
     requireCode: true,
-    message: `即将用备份覆盖当前账本：<br>账户 <b>${next.accounts.length}</b> 个，流水 <b>${next.transactions.length}</b> 笔，用户 <b>${next.users.length}</b> 个。<br>当前数据会被替换，建议先导出一份现有备份。`,
+    message: `即将用备份覆盖当前账本：<br>公司 <b>${cos.length}</b> 家 · 当前公司账户 <b>${accN}</b> 个、流水 <b>${txN}</b> 笔 · 用户 <b>${next.users.length}</b> 个。<br>当前数据会被替换，建议先导出一份现有备份。`,
     confirmText: '确认覆盖',
     onConfirm: () => {
       DB = next;
-      CURRENCY = DB.meta.currency;
+      CURRENCY = baseCurrency();
       attachCompanyProxy(DB);
       COMPANY = activeCompany();
       saveDB();
@@ -1910,23 +2016,35 @@ function issueAdvance(id) {
 function closeAdvance(id) {
   const a = ensureAdvanceList(COMPANY).find(x => x.id === id);
   if (!a) return;
+  const info = advanceInfo(a);
+  const remain = Math.max(0, info.remain);
+  if (remain <= 0.005) return toast('这笔借支已经核销完了', 'err');
+
   openModal(modalShell({
     title: '核销借支',
-    sub: `${a.userName} · 借支 ${fmt(a.amount)}`,
+    sub: `${esc(a.userName || '')} · 借支 ${fmt(a.amount)} · 剩余 ${fmt(remain)}`,
     cls: 'slim',
     body: `<form id="close-adv-form">
       <div class="modal-bd">
+        <div class="summary-strip" style="padding:0 0 14px;gap:22px">
+          <div class="item"><span>借支金额</span><strong>${fmt(a.amount)}</strong></div>
+          <div class="item"><span>已核销</span><strong>${fmt(info.used)}</strong></div>
+          <div class="item"><span>剩余</span><strong style="color:var(--warn)">${fmt(remain)}</strong></div>
+        </div>
         <div class="form-grid">
-          <label class="field span-2"><span class="lbl">实际已用金额</span>
+          <label class="field span-2"><span class="lbl">本次实际使用金额</span>
             <div class="input-affix"><span class="prefix">${curSymbol()}</span>
-              <input type="number" name="used" min="0" step="0.01" value="${a.amount}" required></div></label>
-          <label class="field span-2"><span class="lbl">余额退回账户（余额为 0 可不选）</span>
+              <input type="number" name="used" min="0" step="0.01" value="${remain}" required></div></label>
+          <label class="field span-2"><span class="lbl">余额退回账户</span>
             <select name="accountId"><option value="">不退余额</option>
               ${DB.accounts.filter(x => x.active !== false).map(x => `<option value="${x.id}" ${a.accountId === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}
             </select></label>
           <label class="field span-2"><span class="lbl">核销日期</span>
             <input type="date" name="date" value="${todayISO()}"></label>
+          <label class="switch span-2"><input type="checkbox" name="closeAll"><span class="track"></span><span>同时把未用完的余额全部退回并结清</span></label>
         </div>
+        <div class="alert info" style="margin-top:12px">${icon('info', 15)}
+          <div>不勾选时只登记本次使用金额，余额继续挂着，可以以后再核销。</div></div>
       </div>
       <div class="modal-ft"><div class="spacer"></div>
         <button type="button" class="btn secondary" data-action="close-modal">取消</button>
@@ -1940,31 +2058,81 @@ function closeAdvance(id) {
     e.preventDefault();
     const fd = new FormData(form);
     const used = round2(num(fd.get('used')));
-    if (used > num(a.amount) + 0.005) return failField(form, 'used', '已用金额不能超过借支金额');
-    const back = round2(num(a.amount) - used);
+    if (used > remain + 0.005) return failField(form, 'used', '本次核销金额不能超过剩余');
     const accId = String(fd.get('accountId') || '');
-    if (back > 0 && accId) {
-      const cat = ensureGroupCategory(COMPANY, 'advanceIn');
-      COMPANY.transactions.push({
-        id: uid('t'), date: fd.get('date') || todayISO(), type: 'in',
-        accountId: accId, toAccountId: '', amount: back,
-        categoryId: cat.id, category: cat.name,
-        counterparty: a.userName, summary: '借支余额退回',
-        voucherNo: nextVoucherNo('in', fd.get('date') || todayISO()),
-        operator: SESSION.displayName, userId: SESSION.id,
-        createdAt: new Date().toISOString()
-      });
-    }
-    a.usedAmount = used;
-    a.status = 'closed';
-    a.closedAt = fd.get('date') || todayISO();
-    logAction('修改', { module: '档案', target: '核销借支 ' + a.userName, targetId: a.id, after: '已用 ' + fmt(used) + '，退回 ' + fmt(back) });
-    saveDB(); closeModal(); render();
-    toast('已核销' + (back > 0 && accId ? '，余额已退回' : ''), 'ok');
+    const closeAll = fd.get('closeAll') === 'on';
+    const back = closeAll ? round2(remain - used) : 0;
+    const date = fd.get('date') || todayISO();
+    if (back > 0 && !accId) return toast('要退回余额，请选择退回账户', 'err');
+
+    guardChange({
+      title: '确认核销这笔借支？',
+      message: `本次核销 <b>${fmt(used)}</b>${back > 0 ? `，退回余额 <b>${fmt(back)}</b>` : ''}。${closeAll ? '<br>核销后该笔借支将结清。' : '<br>余额会继续保留，可再次核销。'}`,
+      confirmText: '确认核销',
+      level: 'code',
+      onConfirm: () => {
+        let txId = '';
+        if (back > 0 && accId) {
+          const cat = ensureGroupCategory(COMPANY, 'advanceIn');
+          txId = uid('t');
+          COMPANY.transactions.push({
+            id: txId, date, type: 'in',
+            accountId: accId, toAccountId: '', amount: back,
+            categoryId: cat.id, category: cat.name,
+            counterparty: a.userName, summary: '借支余额退回',
+            voucherNo: nextVoucherNo('in', date),
+            operator: SESSION.displayName, userId: SESSION.id,
+            createdAt: new Date().toISOString()
+          });
+        }
+        if (!Array.isArray(a.draws)) a.draws = [];
+        a.draws.push({ id: uid('dr'), date, used, back, accountId: accId, txId, at: new Date().toISOString(), userId: SESSION.id });
+
+        const now = advanceInfo(a);
+        a.usedAmount = now.used;
+        a.status = now.remain <= 0.005 ? 'closed' : 'issued';
+        if (a.status === 'closed') a.closedAt = date;
+
+        logAction('修改', {
+          module: '档案',
+          target: '核销借支 ' + (a.userName || ''),
+          targetId: a.id,
+          after: `本次使用 ${fmt(used)}${back > 0 ? '，退回 ' + fmt(back) : ''}，剩余 ${fmt(now.remain)}`
+        });
+        saveDB(); closeModal(); render();
+        toast('已核销' + (back > 0 ? '，余额已退回' : ''), 'ok');
+      }
+    });
   });
 }
 
-/* ------------------------------ 票据未回 ------------------------------ */
+/* 撤销最近一次核销：删除核销记录 + 反向删除其退回流水（REQ-16） */
+function undoAdvanceDraw(id) {
+  const a = ensureAdvanceList(COMPANY).find(x => x.id === id);
+  if (!a || !Array.isArray(a.draws) || !a.draws.length) return toast('没有可撤销的核销记录', 'err');
+  const last = a.draws[a.draws.length - 1];
+  confirmDialog({
+    title: '撤销最近一次核销',
+    message: `将撤销 <b>${last.date}</b> 的核销记录（使用 ${fmt(last.used)}${last.back ? '，退回 ' + fmt(last.back) : ''}），<br>并删除该次生成的退回流水。`,
+    confirmText: '撤销核销',
+    requireCode: true,
+    onConfirm: () => {
+      if (last.txId) {
+        const i = COMPANY.transactions.findIndex(t => t.id === last.txId);
+        if (i >= 0) COMPANY.transactions.splice(i, 1);
+      }
+      a.draws.pop();
+      const now = advanceInfo(a);
+      a.usedAmount = now.used;
+      a.status = now.remain <= 0.005 ? 'closed' : 'issued';
+      if (a.status !== 'closed') delete a.closedAt;
+      logAction('撤销', { module: '档案', target: '撤销核销 ' + (a.userName || ''), targetId: a.id, after: `剩余 ${fmt(now.remain)}` });
+      saveDB(); closeModal(); render();
+      toast('已撤销最近一次核销', 'ok');
+    }
+  });
+}
+
 function openInvoiceModal(id) {
   const isEdit = !!id;
   const inv = isEdit ? ensureInvoiceList(COMPANY).find(x => x.id === id) : null;
@@ -2384,6 +2552,390 @@ function askPackPassword() {
       const v = $('#pk-unlock').value;
       closeModal();
       resolve(v);
+    });
+  });
+}
+
+/* ------------------------------ 清空全部数据 ------------------------------ */
+
+/* 高危操作：管理员密码 + 随机数字双重确认，范围可选「仅当前公司」或「全部公司」 */
+function openClearAllModal() {
+  if (!isAdmin()) return toast('只有管理员可以清空数据', 'err');
+  const cos = DB.companies;
+  const cur = COMPANY;
+
+  openModal(modalShell({
+    title: '清空数据',
+    sub: '此操作不可恢复，请先导出账套包备份',
+    cls: 'slim',
+    body: `<form id="clear-form">
+      <div class="modal-bd">
+        <div class="alert danger" style="margin-bottom:14px">
+          ${icon('alert', 15)}
+          <div>将删除账户、流水、往来款、借支、票据、项目与预算。<b>用户账号、公司档案与附件不会删除。</b></div>
+        </div>
+        <div class="form-grid">
+          <div class="field span-2">
+            <span class="lbl">清空范围</span>
+            <div style="display:flex;flex-direction:column;gap:8px;margin-top:6px">
+              <label class="switch"><input type="radio" name="scope" value="current" checked><span class="track"></span><span>仅当前公司：${esc(cur.name)}</span></label>
+              <label class="switch"><input type="radio" name="scope" value="all"><span class="track"></span><span>全部 ${cos.length} 家公司（危险）</span></label>
+            </div>
+          </div>
+          <label class="field span-2"><span class="lbl">管理员密码</span>
+            <input type="password" name="pwd" autocomplete="off" placeholder="输入当前登录账号的密码" required></label>
+        </div>
+        <div class="hint" style="margin-top:10px">提交后还需输入一次随机数字，防止误触。</div>
+      </div>
+      <div class="modal-ft">
+        <div class="spacer"></div>
+        <button type="button" class="btn secondary" data-action="close-modal">取消</button>
+        <button type="submit" class="btn danger">下一步</button>
+      </div>
+    </form>`
+  }));
+
+  $('#clear-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const scope = fd.get('scope') === 'all' ? 'all' : 'current';
+    const pwd = String(fd.get('pwd') || '');
+
+    const okPwd = await verifyCurrentPassword(pwd);
+    if (!okPwd) return toast('密码不正确，未执行任何操作', 'err');
+
+    const targets = scope === 'all' ? DB.companies : [COMPANY];
+    const label = scope === 'all' ? `全部 ${targets.length} 家公司` : `「${COMPANY.name}」`;
+
+    closeModal();
+    confirmDialog({
+      title: '确认清空 ' + label,
+      message: `将删除 ${label} 的账户、流水、往来款、借支、票据、项目与预算。<br><br><b>此操作不可恢复。</b>`,
+      confirmText: '确认清空',
+      requireCode: true,
+      onConfirm: () => {
+        let txCount = 0;
+        targets.forEach(co => {
+          txCount += co.transactions.length;
+          co.accounts = [];
+          co.transactions = [];
+          co.debts = [];
+          co.settlements = [];
+          co.budgets = [];
+          co.parties = [];
+          co.advances = [];
+          co.invoices = [];
+          co.projects = [];
+          co.budgetVersions = [];
+        });
+        logAction('清空', {
+          module: '数据',
+          target: '清空 ' + label,
+          after: `删除 ${txCount} 笔流水 / ${targets.length} 家公司`
+        });
+        saveDB(); closeModal(); render();
+        toast('数据已清空', 'ok');
+      }
+    });
+  });
+}
+
+/* ------------------------------ 票据快捷回票 ------------------------------ */
+
+/* REQ-17：不再要求打开编辑弹窗，直接「已回 / 部分已回」，改动走随机数字确认 */
+function openInvoiceReceiveModal(id) {
+  const inv = ensureInvoiceList(COMPANY).find(x => x.id === id);
+  if (!inv) return;
+  const total = round2(num(inv.amount));
+  const got = round2(num(inv.receivedAmount));
+  const left = round2(total - got);
+
+  openModal(modalShell({
+    title: '登记回票',
+    sub: `${esc(inv.party || '')} · 票面 ${fmt(total)}`,
+    cls: 'slim',
+    body: `<form id="inv-recv-form">
+      <div class="modal-bd">
+        <div class="summary-strip" style="padding:0 0 14px;gap:22px">
+          <div class="item"><span>票面金额</span><strong>${fmt(total)}</strong></div>
+          <div class="item"><span>已回</span><strong>${fmt(got)}</strong></div>
+          <div class="item"><span>未回</span><strong style="color:var(--out)">${fmt(left)}</strong></div>
+        </div>
+        <div class="form-grid">
+          <div class="field span-2">
+            <span class="lbl">回票方式</span>
+            <div class="seg" style="width:auto;margin-top:6px">
+              <button type="button" class="seg-btn is-active" data-recv="all">全部已回</button>
+              <button type="button" class="seg-btn" data-recv="part">部分已回</button>
+            </div>
+          </div>
+          <label class="field span-2" id="recv-amt-field" style="display:none"><span class="lbl">本次回票金额</span>
+            <div class="input-affix"><span class="prefix">${curSymbol()}</span>
+              <input type="number" name="amount" min="0.01" step="0.01" value="${left}">
+            </div>
+          </label>
+          <label class="field span-2"><span class="lbl">回票日期</span><input type="date" name="date" value="${todayISO()}"></label>
+        </div>
+        <div class="alert info" style="margin-top:12px">${icon('info', 15)}
+          <div>确认后会把状态更新为「已回 / 部分回」，并记录本次回票金额。</div></div>
+      </div>
+      <div class="modal-ft">
+        <div class="spacer"></div>
+        <button type="button" class="btn secondary" data-action="close-modal">取消</button>
+        <button type="submit" class="btn primary">确认回票</button>
+      </div>
+    </form>`
+  }));
+
+  let mode = 'all';
+  $$('[data-recv]').forEach(b => b.addEventListener('click', () => {
+    mode = b.dataset.recv;
+    $$('[data-recv]').forEach(x => x.classList.toggle('is-active', x === b));
+    const f = $('#recv-amt-field');
+    if (f) f.style.display = mode === 'part' ? '' : 'none';
+  }));
+
+  $('#inv-recv-form').addEventListener('submit', e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const date = fd.get('date') || todayISO();
+    const add = mode === 'all' ? left : round2(num(fd.get('amount')));
+    if (!(add > 0)) return toast('金额必须大于 0', 'err');
+    if (add > left + 0.001) return toast('本次回票金额不能超过未回金额', 'err');
+
+    const nextGot = round2(got + add);
+    const nextStatus = nextGot >= total - 0.005 ? 'done' : 'partial';
+
+    guardChange({
+      title: '确认登记回票？',
+      message: `本次回票 <b>${fmt(add)}</b>，累计 <b>${fmt(nextGot)}</b> / ${fmt(total)}，<br>状态将变为 <b>${INVOICE_STATUS[nextStatus]}</b>。`,
+      confirmText: '确认回票',
+      level: 'code',
+      onConfirm: () => {
+        inv.receivedAmount = nextGot;
+        inv.status = nextStatus;
+        inv.actualDate = date;
+        logAction('修改', {
+          module: '票据',
+          target: `${inv.party || ''} 回票 ${fmt(add)}`,
+          targetId: inv.id,
+          before: `已回 ${fmt(got)} / ${INVOICE_STATUS[inv.status] || '未回'}`,
+          after: `已回 ${fmt(nextGot)} / ${INVOICE_STATUS[nextStatus]}`
+        });
+        saveDB(); closeModal(); render();
+        toast(`已登记回票 ${fmt(add)}`, 'ok');
+      }
+    });
+  });
+}
+
+/* 资金对账单导出（REQ-20） */
+async function exportFundStatement() {
+  const cash = round2(DB.accounts.filter(a => a.type === 'cash').reduce((s, a) => s + balanceOf(a), 0));
+  const bank = round2(totalBalance() - cash);
+  const invs = ensureInvoiceList(COMPANY).filter(i => i.status !== 'done');
+  const invAmt = round2(invs.reduce((s, i) => s + Math.max(0, num(i.amount) - num(i.receivedAmount)), 0));
+  const borrow = round2(debtTotals('borrow').remaining + debtTotals('reimburse').remaining);
+  const advs = ensureAdvanceList(COMPANY).filter(a => advanceInfo(a).status === 'issued');
+  const advAmt = round2(advs.reduce((s, a) => s + advanceInfo(a).remain, 0));
+  const total = round2(cash + bank + invAmt + borrow + advAmt);
+
+  const rows = [
+    ['库存现金', cash.toFixed(2)],
+    ['银行存款', bank.toFixed(2)],
+    ['票据未回', invAmt.toFixed(2)],
+    ['借款（借入未还 + 员工未报销）', borrow.toFixed(2)],
+    ['借支备用金（未核销）', advAmt.toFixed(2)],
+    ['总账面金额', total.toFixed(2)]
+  ];
+  const ok = await saveTextFile(`资金对账单_${COMPANY.name}_${todayISO()}.csv`, toCSV(['构成项', '金额'], rows), 'text/csv;charset=utf-8');
+  if (ok) toast('资金对账单已导出', 'ok');
+}
+
+/* ------------------------------ 操作日志：备注 / 删除 ------------------------------ */
+
+/* 原始记录不可编辑，只能加备注；备注本身也留痕（REQ-21） */
+function openLogNoteModal(id) {
+  const log = (DB.auditLogs || []).find(l => l.id === id);
+  if (!log) return;
+  openModal(modalShell({
+    title: '给这条日志加备注',
+    sub: `${fmtDateTime(log.at)} · ${log.userName} · ${log.action} ${log.target}`,
+    cls: 'slim',
+    body: `<form id="log-note-form">
+      <div class="modal-bd">
+        <div class="alert info" style="margin-bottom:12px">${icon('info', 15)}
+          <div>原始记录（时间、用户、对象、变更前后）不可修改，备注只做补充说明。</div></div>
+        <label class="field"><span class="lbl">备注</span>
+          <textarea name="note" rows="3" placeholder="例如：该笔已与银行流水核对一致">${esc(log.note || '')}</textarea></label>
+      </div>
+      <div class="modal-ft"><div class="spacer"></div>
+        <button type="button" class="btn secondary" data-action="close-modal">取消</button>
+        <button type="submit" class="btn primary">保存备注</button>
+      </div>
+    </form>`
+  }));
+
+  $('#log-note-form').addEventListener('submit', e => {
+    e.preventDefault();
+    const note = String(new FormData(e.target).get('note') || '').trim();
+    guardChange({
+      title: '确认保存备注？',
+      message: `备注将写入这条日志，并记录操作人与时间。`,
+      confirmText: '保存备注',
+      level: 'plain',
+      onConfirm: () => {
+        log.note = note;
+        log.noteBy = SESSION.displayName;
+        log.noteAt = new Date().toISOString();
+        saveDB(); closeModal(); render();
+        toast('备注已保存', 'ok');
+      }
+    });
+  });
+}
+
+/* 逻辑删除：保留原始记录，只打标记，便于审计追溯 */
+function deleteLog(id) {
+  const log = (DB.auditLogs || []).find(l => l.id === id);
+  if (!log) return;
+  confirmDialog({
+    title: '删除这条日志',
+    message: `将把 <b>${fmtDateTime(log.at)} · ${log.userName} · ${log.action}</b> 标记为已删除。<br>记录本身会保留，勾选「显示已删除」仍可查看。`,
+    confirmText: '确认删除',
+    requireCode: true,
+    onConfirm: () => {
+      log.deleted = true;
+      log.deletedBy = SESSION.displayName;
+      log.deletedAt = new Date().toISOString();
+      logAction('删除', { module: '日志', target: `日志 ${log.id}`, targetId: log.id, after: '逻辑删除' });
+      saveDB(); closeModal(); render();
+      toast('日志已标记删除', 'ok');
+    }
+  });
+}
+
+/* ------------------------------ 汇率录入 ------------------------------ */
+
+/* 1 外币 = ? 本位币；只追加不覆盖，历史留痕（REQ-22） */
+function openFxModal(cur) {
+  if (!CURRENCIES[cur]) return;
+  const base = baseCurrency();
+  const last = baseRate(cur);
+
+  openModal(modalShell({
+    title: `录入 ${CURRENCIES[cur].name} 汇率`,
+    sub: `1 ${cur} = ? ${base}`,
+    cls: 'slim',
+    body: `<form id="fx-form">
+      <div class="modal-bd">
+        <div class="form-grid">
+          <label class="field"><span class="lbl">汇率（1 ${cur} 折合 ${base}）</span>
+            <input type="number" name="rate" step="0.0001" min="0.0001" value="${last == null ? '' : last}" placeholder="例如 15.2000" required></label>
+          <label class="field"><span class="lbl">生效日期</span>
+            <input type="date" name="date" value="${todayISO()}"></label>
+          <label class="field span-2"><span class="lbl">备注</span>
+            <input type="text" name="note" placeholder="可选，例如：10月结账汇率"></label>
+        </div>
+        <div class="alert info" style="margin-top:12px">${icon('info', 15)}
+          <div>历史报表按各自日期的汇率折算，改汇率不会改写已经发生的历史口径。</div></div>
+      </div>
+      <div class="modal-ft"><div class="spacer"></div>
+        <button type="button" class="btn secondary" data-action="close-modal">取消</button>
+        <button type="submit" class="btn primary">保存汇率</button>
+      </div>
+    </form>`
+  }));
+
+  $('#fx-form').addEventListener('submit', e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const rate = num(fd.get('rate'));
+    if (!(rate > 0)) return toast('汇率必须大于 0', 'err');
+    const date = fd.get('date') || todayISO();
+    guardChange({
+      title: '确认保存汇率？',
+      message: `1 ${cur} = <b>${rate}</b> ${base}，生效日期 ${date}。`,
+      confirmText: '保存',
+      level: 'plain',
+      onConfirm: () => {
+        DB.meta.fx = DB.meta.fx || { base: baseCurrency(), rates: {} };
+        DB.meta.fx.rates = DB.meta.fx.rates || {};
+        const arr = Array.isArray(DB.meta.fx.rates[cur]) ? DB.meta.fx.rates[cur] : [];
+        arr.push({ date, rate, by: SESSION.id, byName: SESSION.displayName, at: new Date().toISOString(), note: String(fd.get('note') || '') });
+        arr.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+        DB.meta.fx.rates[cur] = arr;
+        logAction('新增', { module: '设置', target: `汇率 ${cur}→${base}`, after: `${rate}（${date}）` });
+        saveDB(); closeModal(); render();
+        toast('汇率已保存', 'ok');
+      }
+    });
+  });
+}
+
+/* ------------------------------ 账号卡片（同类项合并） ------------------------------ */
+
+/* REQ-18：把「户名 / 账号 / 开户行 / 网银地址 / 网银用户名 / 网银密码」合并成一次录入，
+   保存为共享 bundle 的多条字段，档案页按分组聚合展示。 */
+function openVaultBundleModal() {
+  const p = COMPANY.profile;
+  const F = [
+    ['holder', '账户户名', 'text'],
+    ['accountNo', '银行账号', 'text'],
+    ['bankName', '开户行', 'text'],
+    ['davUrl', '网银登录地址', 'url'],
+    ['davUser', '网银用户名', 'text'],
+    ['davPass', '网银密码', 'password']
+  ];
+
+  openModal(modalShell({
+    title: '添加账号卡片',
+    sub: '一次填完一个账号的全部信息，保存后归为一组',
+    body: `<form id="vault-bundle-form">
+      <div class="modal-bd">
+        <div class="form-grid">
+          <label class="field span-2"><span class="lbl">卡片名称（用于识别）</span>
+            <input type="text" name="title" placeholder="如：Ecobank 对公账户" required></label>
+          ${F.map(([k, l, t]) => `<label class="field ${k === 'holder' || k === 'accountNo' || k === 'bankName' || k === 'davUrl' ? 'span-2' : ''}">
+            <span class="lbl">${l}${t === 'password' ? '（加密保存）' : ''}</span>
+            <input type="${t === 'password' ? 'password' : 'text'}" name="${k}" autocomplete="off" placeholder="可留空"></label>`).join('')}
+        </div>
+        <div class="alert info" style="margin-top:12px">${icon('info', 15)}
+          <div>只保存填写了的项；留空的不会生成空条目。</div></div>
+      </div>
+      <div class="modal-ft"><div class="spacer"></div>
+        <button type="button" class="btn secondary" data-action="close-modal">取消</button>
+        <button type="submit" class="btn primary">保存卡片</button>
+      </div>
+    </form>`
+  }));
+
+  $('#vault-bundle-form').addEventListener('submit', e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const title = String(fd.get('title') || '').trim();
+    if (!title) return toast('请填写卡片名称', 'err');
+    const bundle = uid('vb');
+    const created = [];
+    F.forEach(([k, l, t]) => {
+      const v = String(fd.get(k) || '').trim();
+      if (!v) return;
+      created.push({ id: uid('f'), group: '银行账户', label: `${title} · ${l}`, value: v, type: t, note: '', bundle, bundleTitle: title, updatedAt: new Date().toISOString() });
+    });
+    if (!created.length) return toast('至少填写一项', 'err');
+
+    guardChange({
+      title: '确认保存账号卡片？',
+      message: `将新增 <b>${created.length}</b> 条字段，归入「银行账户」分组。`,
+      confirmText: '保存',
+      level: 'plain',
+      onConfirm: () => {
+        p.fields = Array.isArray(p.fields) ? p.fields : [];
+        created.forEach(f => p.fields.push(f));
+        logAction('新增', { module: '档案', target: '账号卡片 ' + title, after: `${created.length} 条字段` });
+        saveDB(); closeModal(); render();
+        toast(`已保存 ${created.length} 条`, 'ok');
+      }
     });
   });
 }

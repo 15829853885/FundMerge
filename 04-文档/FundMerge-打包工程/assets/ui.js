@@ -119,8 +119,22 @@ function confirmDialog({ title, message, confirmText = '确定', tone = 'danger'
   }
 }
 
-/* ---------------------------------- 浮层 ---------------------------------- */
+/* 分级二次确认（G-02）
+   level='code'  → 随机数字确认：改金额、删除、改状态、清空等影响余额或不可逆的操作
+   level='plain' → 普通确认：改备注、改设置等低风险修改
+   新增操作不调用本函数。 */
+function guardChange({ title, message, confirmText = '确认修改', level = 'code', onConfirm }) {
+  return confirmDialog({
+    title,
+    message,
+    confirmText,
+    tone: level === 'code' ? 'danger' : 'primary',
+    requireCode: level === 'code',
+    onConfirm
+  });
+}
 
+/* ---------------------------------- 浮层 ---------------------------------- */
 let popAnchor = null;
 
 function showPopover(anchor, html, opts = {}) {
@@ -323,8 +337,8 @@ function areaChart(points, opts = {}) {
   for (let i = 0; i <= 4; i++) {
     const y = pad.t + (ih * i) / 4;
     const val = max - ((max - min) * i) / 4;
-    grid += `<line x1="${pad.l}" y1="${y.toFixed(1)}" x2="${w - pad.r}" y2="${y.toFixed(1)}" stroke="#f1f3f7"/>`;
-    grid += `<text x="${pad.l - 10}" y="${(y + 3.5).toFixed(1)}" text-anchor="end" font-size="10.5" fill="#94a3b8">${fmtShort(val)}</text>`;
+    grid += `<line x1="${pad.l}" y1="${y.toFixed(1)}" x2="${w - pad.r}" y2="${y.toFixed(1)}" stroke="var(--line)"/>`;
+    grid += `<text x="${pad.l - 10}" y="${(y + 3.5).toFixed(1)}" text-anchor="end" font-size="10.5" fill="var(--muted-2)">${fmtShort(val)}</text>`;
   }
 
   const pts = points.map((p, i) => [X(i), Y(p.value)]);
@@ -335,7 +349,7 @@ function areaChart(points, opts = {}) {
   const count = Math.min(5, points.length);
   for (let i = 0; i < count; i++) ticks.push(Math.round((i * (points.length - 1)) / Math.max(count - 1, 1)));
   const xLabels = [...new Set(ticks)].map(i =>
-    `<text x="${X(i).toFixed(1)}" y="${h - 6}" text-anchor="middle" font-size="10.5" fill="#94a3b8">${shortDate(points[i].label)}</text>`
+    `<text x="${X(i).toFixed(1)}" y="${h - 6}" text-anchor="middle" font-size="10.5" fill="var(--muted-2)">${shortDate(points[i].label)}</text>`
   ).join('');
 
   const last = points[points.length - 1];
@@ -379,8 +393,8 @@ function barChart(rows, opts = {}) {
   for (let i = 0; i <= 4; i++) {
     const y = pad.t + (ih * i) / 4;
     const val = maxVal - (maxVal * i) / 4;
-    grid += `<line x1="${pad.l}" y1="${y.toFixed(1)}" x2="${w - pad.r}" y2="${y.toFixed(1)}" stroke="#f1f3f7"/>`;
-    grid += `<text x="${pad.l - 10}" y="${(y + 3.5).toFixed(1)}" text-anchor="end" font-size="10.5" fill="#94a3b8">${fmtShort(val)}</text>`;
+    grid += `<line x1="${pad.l}" y1="${y.toFixed(1)}" x2="${w - pad.r}" y2="${y.toFixed(1)}" stroke="var(--line)"/>`;
+    grid += `<text x="${pad.l - 10}" y="${(y + 3.5).toFixed(1)}" text-anchor="end" font-size="10.5" fill="var(--muted-2)">${fmtShort(val)}</text>`;
   }
 
   const slot = iw / rows.length;
@@ -392,7 +406,7 @@ function barChart(rows, opts = {}) {
     bars += `<rect x="${x1.toFixed(1)}" y="${Y(r.in).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(0, pad.t + ih - Y(r.in)).toFixed(1)}" rx="3" fill="#f87171"><title>${r.label} 流入 ${fmt(r.in)}</title></rect>`;
     bars += `<rect x="${x2.toFixed(1)}" y="${Y(r.out).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(0, pad.t + ih - Y(r.out)).toFixed(1)}" rx="3" fill="#34d399"><title>${r.label} 流出 ${fmt(r.out)}</title></rect>`;
     if (rows.length <= 14) {
-      bars += `<text x="${cx.toFixed(1)}" y="${h - 8}" text-anchor="middle" font-size="10.5" fill="#94a3b8">${r.label}</text>`;
+      bars += `<text x="${cx.toFixed(1)}" y="${h - 8}" text-anchor="middle" font-size="10.5" fill="var(--muted-2)">${r.label}</text>`;
     }
   });
 
@@ -405,20 +419,24 @@ function donutChart(rows, opts = {}) {
   if (!total) return `<div class="chart-empty" style="height:${size}px">暂无数据</div>`;
   const C = 2 * Math.PI * r;
   let offset = 0;
-  const segs = rows.map(x => {
+  const segs = rows.map((x, i) => {
     const len = (x.value / total) * C;
-    const s = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${x.color}" stroke-width="18"
+    const pct = ((x.value / total) * 100).toFixed(1);
+    const s = `<circle class="dseg" data-i="${i}" data-label="${esc(x.label)}" data-value="${fmt(x.value)}" data-pct="${pct}"
+      cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${x.color}" stroke-width="18"
       stroke-dasharray="${Math.max(len - 1.5, 0).toFixed(2)} ${(C - len + 1.5).toFixed(2)}"
       stroke-dashoffset="${(-offset).toFixed(2)}" transform="rotate(-90 ${cx} ${cy})" stroke-linecap="butt"/>`;
     offset += len;
     return s;
   }).join('');
+  const defLabel = opts.centerLabel || '合计';
+  const defValue = opts.centerValue || fmtShort(total);
   return `<div style="display:flex;align-items:center;justify-content:center">
-    <div style="position:relative;width:${size}px;height:${size}px">
+    <div class="donut-wrap" style="position:relative;width:${size}px;height:${size}px">
       <svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">${segs}</svg>
       <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none">
-        <span style="font-size:10.5px;color:var(--muted-2)">${opts.centerLabel || '合计'}</span>
-        <strong style="font-size:15px;font-weight:650;letter-spacing:-.02em;font-variant-numeric:tabular-nums">${opts.centerValue || fmtShort(total)}</strong>
+        <span class="dcenter-label" data-def="${esc(defLabel)}" style="font-size:10.5px;color:var(--muted-2);max-width:${size - 34}px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(defLabel)}</span>
+        <strong class="dcenter-value" data-def="${esc(defValue)}" style="font-size:14.5px;font-weight:650;letter-spacing:-.02em;font-variant-numeric:tabular-nums;max-width:${size - 28}px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(defValue)}</strong>
       </div>
     </div>
   </div>`;
@@ -567,6 +585,32 @@ const V = {
     return n >= min && n <= max;
   }
 };
+
+/**
+ * 日期范围校验（G-03）：开始日期必须 ≤ 结束日期。
+ * 参数可以是 input 元素，也可以直接是 'YYYY-MM-DD' 字符串。
+ * 返回 true 表示通过；不通过时会给两个字段加红框并 toast。
+ */
+function checkDateRange(from, to, opts = {}) {
+  const fv = typeof from === 'string' ? from : ((from && from.value) || '');
+  const tv = typeof to === 'string' ? to : ((to && to.value) || '');
+  if (!fv || !tv || fv <= tv) return true;
+  [from, to].forEach(el => {
+    if (el && el.closest) {
+      const f = el.closest('.field');
+      if (!f) return;
+      f.classList.add('is-invalid');
+      if (!f.querySelector('.field-err')) {
+        const d = document.createElement('div');
+        d.className = 'field-err';
+        d.textContent = opts.msg || '开始日期不能晚于结束日期';
+        f.appendChild(d);
+      }
+    }
+  });
+  toast(opts.msg || '开始日期不能晚于结束日期', 'err');
+  return false;
+}
 
 /**
  * 统一校验
