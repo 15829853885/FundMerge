@@ -83,6 +83,10 @@
         "to": "文档/构建说明.md"
       },
       {
+        "from": "开发报告.md",
+        "to": "文档/开发报告.md"
+      },
+      {
         "from": "build/icon.png",
         "to": "icon.png"
       }
