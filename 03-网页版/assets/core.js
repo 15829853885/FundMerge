@@ -331,6 +331,7 @@ let UI = {
   trendDays: 30,
   txFilter: { from: '', to: '', account: '', type: '', category: '', keyword: '', page: 1 },
   txPageSize: 15,
+  pages: {}, pageSize: {}, pageSig: {},   /* 统一分页状态（阶段二） */
   debtTab: 'lend',
   reportTab: 'cashflow',
   cfRange: { from: '', to: '' },

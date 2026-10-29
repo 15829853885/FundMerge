@@ -6,6 +6,13 @@
 
 /* --------------------------------- 公共片段 -------------------------------- */
 
+/* 集团总公司标识：全站统一用 .hq-badge，跟在公司名后面、不遮挡公司名（阶段三 13） */
+function hqBadge(co) {
+  return (co && co.isParent)
+    ? `<span class="hq-badge" title="集团总公司">${icon('layers', 11)}集团总公司</span>`
+    : '';
+}
+
 function catChip(cat, showIcon = true) {
   if (!cat) return '';
   return `<span class="cat-chip">
@@ -90,18 +97,40 @@ function trendDateHTML() {
     <input type="date" data-trend="to" value="${esc(r.to || '')}" title="自定义结束日期" style="${st}">`;
 }
 
-function pager(total, page, size, action) {  const pages = Math.max(1, Math.ceil(total / size));
-  const cur = Math.min(Math.max(1, page), pages);
+/* ============================================================================
+   统一分页
+   ----------------------------------------------------------------------------
+   状态存在 UI.pages / UI.pageSize，key 由调用方给（如 'tx' / 'logs'）。
+   sig 是筛选条件的签名：签名一变即回到第一页，避免"筛完还停在第 9 页"。
+   页面内一律用 listPager().start + size 切片，保证与显示的总数一致。
+   ========================================================================== */
+function listPager(total, key, sig) {
+  const size = UI.pageSize[key] || 15;
+  const pages = Math.max(1, Math.ceil(total / size));
+  const sigKey = key + '|' + (sig || '');
+  if (UI.pageSig[key] !== sigKey) { UI.pages[key] = 1; UI.pageSig[key] = sigKey; }
+  const cur = Math.min(Math.max(1, UI.pages[key] || 1), pages);
+  UI.pages[key] = cur;
+  return {
+    page: cur, size, pages, start: (cur - 1) * size,
+    html: total > 0 ? pagerHTML(total, cur, size, pages, key) : ''
+  };
+}
+
+function pagerHTML(total, cur, size, pages, key) {
   const from = total === 0 ? 0 : (cur - 1) * size + 1;
   const to = Math.min(total, cur * size);
-  const btn = (p, label, disabled, active) =>
-    `<button class="btn sm ${active ? 'primary' : 'secondary'}" ${disabled ? 'disabled' : ''} data-action="${action}" data-page="${p}">${label}</button>`;
-  return `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 18px;border-top:1px solid var(--line)">
-    <span style="font-size:12px;color:var(--muted-2)">第 ${from}–${to} 条，共 ${total} 条</span>
-    <div style="display:flex;gap:6px">
-      ${btn(cur - 1, '上一页', cur <= 1, false)}
-      <span style="display:flex;align-items:center;padding:0 6px;font-size:12px;color:var(--muted)">${cur} / ${pages}</span>
-      ${btn(cur + 1, '下一页', cur >= pages, false)}
+  const opt = n => `<option value="${n}"${n === size ? ' selected' : ''}>${n}</option>`;
+  return `<div class="pager no-print">
+    <span class="pager-info">第 ${from}–${to} 条 · 共 <b>${total}</b> 条</span>
+    <div class="pager-ctl">
+      <label class="pager-size">每页
+        <select data-action="page-size" data-list="${key}" aria-label="每页条数">${[15, 30, 50, 100].map(opt).join('')}</select>
+        条
+      </label>
+      <button class="btn sm secondary" ${cur <= 1 ? 'disabled' : ''} data-action="page" data-list="${key}" data-page="${cur - 1}">上一页</button>
+      <span class="pager-cur">${cur} / ${pages}</span>
+      <button class="btn sm secondary" ${cur >= pages ? 'disabled' : ''} data-action="page" data-list="${key}" data-page="${cur + 1}">下一页</button>
     </div>
   </div>`;
 }
@@ -309,17 +338,17 @@ function viewDashboard() {
       <div class="card-hd">
         <div>
           <div class="card-title">账户余额</div>
-          <div class="card-sub">${DB.accounts.length} 个账户</div>
+          <div class="card-sub">${DB.accounts.length} 个账户${acctSorted.length > 5 ? ' · 可横向滑动，点击查看流水' : ' · 点击查看流水'}</div>
         </div>
         <button class="btn sm ghost" data-action="nav" data-view="accounts">管理</button>
       </div>
       <div class="card-bd">
-        <div class="acct-list">
+        <div class="acct-list${acctSorted.length > 5 ? ' is-scroll-x' : ''}">
           ${acctSorted.map(a => {
             const b = balanceOf(a);
             const s = accountStats(a, thisM + '-01', today);
             const delta = round2(s.inflow - s.outflow);
-            return `<div class="acct-row">
+            return `<div class="acct-row is-clickable" data-action="acc-detail" data-id="${a.id}" title="查看「${esc(a.name)}」的资金流水">
               <div class="acct-ico ${a.type === 'cash' ? 'cash' : ''}">${icon(a.type === 'cash' ? 'wallet' : 'bank', 16)}</div>
               <div class="acct-meta">
                 <strong>${esc(a.name)}</strong>
@@ -354,7 +383,7 @@ function viewDashboard() {
         <div><div class="card-title">预算执行</div><div class="card-sub">${monthLabel(thisM)}</div></div>
         <button class="btn sm ghost" data-action="nav" data-view="budgets">设置</button>
       </div>
-      <div class="card-bd">
+      <div class="card-bd is-clickable" data-action="budget-jump" data-month="${thisM}" title="查看并修改 ${monthLabel(thisM)}预算">
         ${bm.budget > 0 ? `
           <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px">
             <span style="font-size:12px;color:var(--muted)">已用 ${fmtShort(bm.spent)} / ${fmtShort(bm.budget)}</span>
@@ -385,10 +414,10 @@ function viewDashboard() {
         <div><div class="card-title">待办往来</div><div class="card-sub">未结清款项</div></div>
         <button class="btn sm ghost" data-action="nav" data-view="debts">全部</button>
       </div>
-      <div class="card-bd">
+      <div class="card-bd is-clickable" data-action="debt-jump" data-tab="all" title="查看全部未结清往来">
         ${openDebts.length ? `<div class="list">
           ${openDebts.map(({ d, info }) => `
-            <div class="list-row">
+            <div class="list-row is-clickable" data-action="debt-jump" data-tab="${d.type}" data-id="${d.id}" title="查看「${esc(d.party)}」的往来明细">
               <div class="lr-main">
                 <div class="lr-title">${esc(d.party)}</div>
                 <div class="lr-sub">${DEBT_TYPE[d.type].label} · ${info.overdue ? `<span style="color:var(--danger)">已逾期</span>` : (d.dueDate ? `到期 ${d.dueDate}` : '未设到期日')}</div>
@@ -413,7 +442,7 @@ function viewDashboard() {
             const c = txCat(t), acc = accById(t.accountId);
             const sign = t.type === 'in' ? '+' : t.type === 'out' ? '-' : '';
             const cls = t.type === 'in' ? 'in' : t.type === 'out' ? 'out' : 'move';
-            return `<tr>
+            return `<tr class="is-clickable" data-action="tx-jump" data-id="${t.id}" title="查看这笔流水的明细">
               <td class="num nowrap" style="color:var(--muted)">${t.date}</td>
               <td>${catChip(c)}</td>
               <td class="nowrap" style="color:var(--ink-3)">${esc(txAccountLabel(t))}${t.noCash ? ' <span class="pill move">集团代付</span>' : ''}</td>
@@ -537,10 +566,8 @@ function txAreaHTML() {
     })}</div>`;
   }
 
-  const size = UI.txPageSize;
-  const pages = Math.max(1, Math.ceil(list.length / size));
-  const page = Math.min(Math.max(1, UI.txFilter.page), pages);
-  const rows = list.slice((page - 1) * size, page * size);
+  const pg = listPager(list.length, 'tx', JSON.stringify(UI.txFilter));
+  const rows = list.slice(pg.start, pg.start + pg.size);
 
   return `<div class="card">
     <div class="summary-strip" style="border-bottom:1px solid var(--line)">
@@ -582,7 +609,7 @@ function txAreaHTML() {
         }).join('')}</tbody>
       </table>
     </div>
-    ${pager(list.length, page, size, 'tx-page')}
+    ${pg.html}
   </div>`;
 }
 
@@ -608,9 +635,8 @@ function viewDebts() {
     overdue: r.info.overdue,
     text: `${r.d.party} ${r.d.note || ''}`
   }));
-  const PAGE = 15;
-  const page = Math.min(Math.max(1, fs.page || 1), Math.max(1, Math.ceil(filtered.length / PAGE)));
-  const list = filtered.slice((page - 1) * PAGE, page * PAGE);
+  const pg = listPager(filtered.length, 'debt', JSON.stringify(fs));
+  const list = filtered.slice(pg.start, pg.start + pg.size);
 
   const t = DEBT_TYPE[tab];
   const tot = debtTotals(tab);
@@ -696,7 +722,7 @@ function viewDebts() {
           : '员工垫付但尚未报销的款项，记在这里，报销时自动生成支出。',
         actions: `<button class="btn primary" data-action="new-debt" data-type="${tab}">新增${t.label}</button>`
       })}
-      ${filtered.length > PAGE ? pager(filtered.length, page, PAGE, 'debt-page') : ''}
+      ${pg.html}
     </div>
   </div>`;
 }
@@ -791,12 +817,12 @@ function viewBudgets() {
       </div>
     </div>
     <div class="card-bd">
-      <div class="budget-row" style="border-bottom:1px solid var(--line-2);padding-bottom:9px">
-        <div style="font-size:11.5px;color:var(--muted-2);font-weight:600">分类</div>
-        <div style="font-size:11.5px;color:var(--muted-2);font-weight:600">执行进度</div>
-        <div class="b-num" style="font-size:11.5px;color:var(--muted-2);font-weight:600">已用 / 预算</div>
-        <div class="b-num" style="font-size:11.5px;color:var(--muted-2);font-weight:600">剩余</div>
-        <div style="font-size:11.5px;color:var(--muted-2);font-weight:600;text-align:right">预算金额</div>
+      <div class="budget-row is-head">
+        <div class="b-th">分类</div>
+        <div class="b-th">执行进度</div>
+        <div class="b-th b-num">已用 / 预算</div>
+        <div class="b-th b-num">剩余</div>
+        <div class="b-th b-num">预算金额</div>
       </div>
       ${(UI.budgetShowAll ? rows : rows.filter(r => r.budget > 0 || r.spent > 0)).map(r => {
         const tone2 = r.pct > 100 ? 'over' : r.pct > 80 ? 'warn' : 'ok';
@@ -1471,6 +1497,9 @@ function viewSettings() {
   return `
   <div class="grid g-2">
     <div class="card">
+      <div class="card-hd">
+        <div><div class="card-title">通用设置</div><div class="card-sub">集团、本位币、外观与数据概况</div></div>
+      </div>
       <div class="setting-block">
         <h4>集团信息</h4>
         <p>集团名称会显示在集团总览、集团报表与登录页，用于标识多家公司合并后的整体。</p>
@@ -1567,6 +1596,23 @@ function viewSettings() {
       </div>
 
       <div class="setting-block">
+        <h4>数据概况</h4>
+        <dl class="kv">
+          <dt>账户数量</dt><dd>${DB.accounts.length} 个（现金 ${DB.accounts.filter(a => a.type === 'cash').length} · 银行 ${DB.accounts.filter(a => a.type === 'bank').length}）</dd>
+          <dt>流水笔数</dt><dd>${DB.transactions.length} 笔</dd>
+          <dt>往来款项</dt><dd>${DB.debts.length} 笔</dd>
+          <dt>分类数量</dt><dd>${DB.categories.length} 个</dd>
+          <dt>数据期间</dt><dd>${span}</dd>
+          <dt>占用空间</dt><dd>约 ${sizeKB} KB${DESKTOP ? '（本机数据文件）' : '（浏览器本地存储）'}</dd>
+        </dl>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-hd">
+        <div><div class="card-title">数据与安全</div><div class="card-sub">安全策略、账套管理、备份与账号</div></div>
+      </div>
+      <div class="setting-block">
         <h4>安全策略</h4>
         <p>长时间无操作自动退出登录，避免离开工位后账号被他人使用。</p>
         <div class="form-grid">
@@ -1602,18 +1648,6 @@ function viewSettings() {
         </div>
       </div>
 
-      <div class="setting-block">
-        <h4>数据概况</h4>
-        <dl class="kv">
-          <dt>账户数量</dt><dd>${DB.accounts.length} 个（现金 ${DB.accounts.filter(a => a.type === 'cash').length} · 银行 ${DB.accounts.filter(a => a.type === 'bank').length}）</dd>
-          <dt>流水笔数</dt><dd>${DB.transactions.length} 笔</dd>
-          <dt>往来款项</dt><dd>${DB.debts.length} 笔</dd>
-          <dt>分类数量</dt><dd>${DB.categories.length} 个</dd>
-          <dt>数据期间</dt><dd>${span}</dd>
-          <dt>占用空间</dt><dd>约 ${sizeKB} KB${DESKTOP ? '（本机数据文件）' : '（浏览器本地存储）'}</dd>
-        </dl>
-      </div>
-
       ${DESKTOP && APP_INFO ? `<div class="setting-block">
         <h4>数据目录</h4>
         <p>账本、档案与附件全部保存在这个目录里。把它放进网盘同步文件夹（OneDrive / Google Drive / Dropbox），
@@ -1629,9 +1663,7 @@ function viewSettings() {
           <button class="btn secondary sm" data-action="set-data-dir">更改数据目录</button>
         </div>
       </div>` : ''}
-    </div>
 
-    <div class="card">
       <div class="setting-block">
         <h4>备份与导出</h4>
         <p>账目仅保存在这台电脑上，不联网、不上传。更换电脑或重装系统前，请先导出备份。<br>
@@ -1785,7 +1817,7 @@ function viewGroupDashboard() {
         <div class="co-card-top">
           <span class="co-dot" style="--c:${r.co.color}"></span>
           <strong>${esc(r.co.name)}</strong>
-          ${r.co.isParent ? '<span class="pill move">总公司</span>' : ''}
+          ${hqBadge(r.co)}
           <span class="pill muted">${r.co.accounts.length} 账户</span>
         </div>
         <div class="co-card-bal">${fmt(r.t.total)}</div>
@@ -1890,7 +1922,7 @@ function viewGroupDashboard() {
           </div>
           ${payRows.length ? `<div class="rank">
             ${payRows.slice(0, 5).map(r => `<div class="rank-item">
-              <div class="rank-name"><span class="co-dot" style="--c:${r.co.color}"></span><span>${esc(r.co.name)}</span></div>
+              <div class="rank-name"><span class="co-dot" style="--c:${r.co.color}"></span><span>${esc(r.co.name)}${hqBadge(r.co)}</span></div>
               <div class="rank-val">${fmtShort(r.lend)} / ${fmtShort(r.pay)}</div>
               <div class="rank-bar"><i class="in" style="width:${Math.max(2, (r.lend / payMax) * 100).toFixed(1)}%"></i></div>
               <div class="rank-bar"><i class="out" style="width:${Math.max(2, (r.pay / payMax) * 100).toFixed(1)}%"></i></div>
@@ -1941,7 +1973,7 @@ function viewGroupDashboard() {
             const cls = t.type === 'in' ? 'in' : t.type === 'out' ? 'out' : 'move';
             return `<tr>
               <td class="num nowrap" style="color:var(--muted)">${t.date}</td>
-              <td><span class="co-tag"><span class="co-dot" style="--c:${co.color}"></span>${esc(co.name)}</span></td>
+              <td><span class="co-tag"><span class="co-dot" style="--c:${co.color}"></span>${esc(co.name)}${hqBadge(co)}</span></td>
               <td>${catChip(c)}</td>
               <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)">${esc(t.summary || t.counterparty || '—')}</td>
               <td class="tr cell-amount ${cls}">${sign}${fmtPlain(t.amount)}</td>
@@ -2040,7 +2072,7 @@ function viewGroupReports() {
               <div style="display:flex;align-items:center;gap:8px">
                 <span class="co-dot" style="--c:${r.co.color}"></span>
                 <div>
-                  <div class="cell-main">${esc(r.co.name)}</div>
+                  <div class="cell-main">${esc(r.co.name)}${hqBadge(r.co)}</div>
                   <div class="cell-sub">${r.co.accounts.length} 账户 · 现金 ${fmtShort(r.tt.cash)} / 银行 ${fmtShort(r.tt.bank)}</div>
                 </div>
               </div>
@@ -2179,7 +2211,7 @@ function viewCompanies() {
             <div style="display:flex;align-items:center;gap:9px">
               <span class="co-badge sm" style="--c:${co.color}">${esc(initials(co.name))}</span>
               <div>
-                <div class="cell-main">${esc(co.name)}${co.isParent ? ' <span class="pill move">总公司</span>' : ''}</div>
+                <div class="cell-main">${esc(co.name)}${hqBadge(co)}</div>
                 <div class="cell-sub">${esc(co.note || co.taxNo || '—')}${hqEx && co.isParent ? ' · 不计入合并' : ''}</div>
               </div>
             </div>
@@ -2250,6 +2282,57 @@ function vaultValueHTML(f) {
   return `<span class="vault-text">${esc(f.value)}</span>`;
 }
 
+/* 单条字段也用同一张卡片样式，保证同页视觉一致（阶段三 8） */
+function vaultFieldActions(f) {
+  return `${f.type === 'password' ? `<button class="icon-btn" title="显示/隐藏" data-action="vault-reveal" data-id="${f.id}">${icon('eye', 15)}</button>` : ''}
+    ${f.value ? `<button class="icon-btn" title="复制" data-action="vault-copy" data-id="${f.id}">${icon('clipboard', 14)}</button>` : ''}
+    <button class="icon-btn" title="编辑" data-action="vault-edit" data-id="${f.id}">${icon('edit', 14)}</button>
+    <button class="icon-btn danger" title="删除" data-action="vault-del" data-id="${f.id}">${icon('trash', 14)}</button>`;
+}
+
+function vaultFieldCard(f) {
+  return `<div class="vault-card">
+    <div class="vault-card-hd">
+      <span class="vault-ico">${icon(f.type === 'password' ? 'lock' : groupIcon(f.group), 15)}</span>
+      <span class="vault-card-title" title="${esc(f.label)}">${esc(f.label)}</span>
+      ${f.type === 'password' ? '<span class="pill muted">密码</span>' : ''}
+      ${f.type === 'url' ? '<span class="pill info">网址</span>' : ''}
+      <span class="spacer"></span>
+    </div>
+    <div class="vault-card-body">
+      <div class="vault-value">${vaultValueHTML(f)}</div>
+      ${f.note ? `<div class="vault-note">${esc(f.note)}</div>` : ''}
+    </div>
+    <div class="vault-card-ft"><span class="spacer"></span>${vaultFieldActions(f)}</div>
+  </div>`;
+}
+
+/* 一张「账号卡片」= 一次录入的多个字段，内部逐行展示，整卡可删 */
+function vaultBundleCard(c) {
+  return `<div class="vault-card">
+    <div class="vault-card-hd">
+      <span class="vault-ico">${icon('bank', 15)}</span>
+      <span class="vault-card-title" title="${esc(c.title)}">${esc(c.title)}</span>
+      <span class="spacer"></span>
+      <span class="pill muted">${c.items.length} 项</span>
+    </div>
+    <div class="vault-card-body">
+      ${c.items.map(f => {
+        const k = String(f.label || '').split(' · ').pop() || '值';
+        return `<div class="vault-line">
+          <span class="vl-k">${esc(k)}</span>
+          <span class="vl-v${f.type === 'password' ? ' secret' : ''}">${vaultValueHTML(f)}</span>
+          <span class="vl-a">${vaultFieldActions(f)}</span>
+        </div>`;
+      }).join('')}
+    </div>
+    <div class="vault-card-ft">
+      <span class="spacer"></span>
+      <button class="btn sm danger-ghost" data-action="vault-del-bundle" data-bundle="${esc(c.items[0].bundle)}">${icon('trash', 14)} 删除整张卡片</button>
+    </div>
+  </div>`;
+}
+
 function viewProfile() {
   const p = COMPANY.profile;
   const fields = p.fields;
@@ -2261,7 +2344,7 @@ function viewProfile() {
   return `
   <div class="page-hero">
     <div>
-      <h2>公司档案${COMPANY.isParent ? ' <span class="pill move" style="vertical-align:middle">集团总公司</span>' : ''}</h2>
+      <h2>公司档案${hqBadge(COMPANY)}</h2>
       <p>${esc(COMPANY.name)} 的注册资料、银行与税务账号、归档文件，全部保存在本机${COMPANY.isParent ? '。这份档案同时也代表集团本身' : ''}</p>
     </div>
     <div style="display:flex;gap:8px">
@@ -2277,7 +2360,7 @@ function viewProfile() {
     </div>
     <div class="card-bd">
       <div class="form-grid c3">
-        <label class="field"><span class="lbl">公司法定名称</span><input type="text" data-profile="legalName" value="${esc(p.legalName)}" placeholder="注册证书上的全称"></label>
+        <label class="field"><span class="lbl">公司法定名称<b class="req" title="必填">*</b></span><input type="text" data-profile="legalName" value="${esc(p.legalName)}" placeholder="注册证书上的全称"></label>
         <label class="field"><span class="lbl">注册号</span><input type="text" data-profile="regNo" value="${esc(p.regNo)}" placeholder="Company Registration No."></label>
         <label class="field"><span class="lbl">税号 / TIN</span><input type="text" data-profile="taxNo" value="${esc(p.taxNo || COMPANY.taxNo || '')}" placeholder="GRA TIN"></label>
         <label class="field span-2"><span class="lbl">注册地址</span><input type="text" data-profile="address" value="${esc(p.address)}" placeholder="街道、城市、地区"></label>
@@ -2298,28 +2381,25 @@ function viewProfile() {
       </div>
     </div>
     <div class="card-bd flush">
-      ${groups.length ? groups.map(g => `
+      ${groups.length ? groups.map(g => {
+        /* 同一次「账号卡片」录入的多个字段共享 bundle，聚合成一张卡片里的多行；
+           其余独立字段各自一张卡。同一个分组内卡片样式完全一致（阶段三 8） */
+        const cards = [];
+        const bundles = new Map();
+        g.items.forEach(f => {
+          if (!f.bundle) { cards.push({ one: f }); return; }
+          let c = bundles.get(f.bundle);
+          if (!c) { c = { title: f.bundleTitle || '账号卡片', items: [] }; bundles.set(f.bundle, c); cards.push(c); }
+          c.items.push(f);
+        });
+        return `
         <div class="vault-group">
-          <div class="vault-group-hd">${icon(groupIcon(g.name), 13)} ${g.name}<span>${g.items.length}</span></div>
-          ${g.items.map(f => `
-            <div class="vault-row">
-              <span class="vault-ico">${icon(f.type === 'password' ? 'lock' : groupIcon(f.group), 15)}</span>
-              <div class="vault-main">
-                <div class="vault-label">${esc(f.label)}
-                  ${f.type === 'password' ? '<span class="pill muted">密码</span>' : ''}
-                  ${f.type === 'url' ? '<span class="pill info">网址</span>' : ''}
-                </div>
-                <div class="vault-value">${vaultValueHTML(f)}</div>
-                ${f.note ? `<div class="vault-note">${esc(f.note)}</div>` : ''}
-              </div>
-              <div class="vault-actions">
-                ${f.type === 'password' ? `<button class="icon-btn" title="显示/隐藏" data-action="vault-reveal" data-id="${f.id}">${icon('eye', 15)}</button>` : ''}
-                ${f.value ? `<button class="icon-btn" title="复制" data-action="vault-copy" data-id="${f.id}">${icon('clipboard', 14)}</button>` : ''}
-                <button class="icon-btn" title="编辑" data-action="vault-edit" data-id="${f.id}">${icon('edit', 14)}</button>
-                <button class="icon-btn danger" title="删除" data-action="vault-del" data-id="${f.id}">${icon('trash', 14)}</button>
-              </div>
-            </div>`).join('')}
-        </div>`).join('') : emptyState({
+          <div class="vault-group-hd">${icon(groupIcon(g.name), 13)} ${g.name}<span>${cards.length} 张 · ${g.items.length} 项</span></div>
+          <div class="vault-cards">
+            ${cards.map(c => c.one ? vaultFieldCard(c.one) : vaultBundleCard(c)).join('')}
+          </div>
+        </div>`;
+      }).join('') : emptyState({
           ico: 'lock',
           title: '还没有账号条目',
           desc: '把对公账号、网银地址与密码、GRA 账号等记录在这里，随时查得到。',
@@ -2402,9 +2482,8 @@ function viewLogs() {
   }
   const f = UI.logFilter || (UI.logFilter = { from: '', to: '', user: '', module: '', action: '' });
   const list = filteredLogs();
-  const page = UI.logPage || 1, size = 30;
-  const total = Math.max(1, Math.ceil(list.length / size));
-  const rows = list.slice((page - 1) * size, page * size);
+  const pg = listPager(list.length, 'logs', JSON.stringify(f));
+  const rows = list.slice(pg.start, pg.start + pg.size);
 
   const userOpts = ['<option value="">全部用户</option>'].concat(DB.users.map(u =>
     '<option value="' + u.id + '"' + (f.user === u.id ? ' selected' : '') + '>' + esc(u.displayName) + '</option>')).join('');
@@ -2439,12 +2518,6 @@ function viewLogs() {
     '</tr>').join('') + '</tbody></table></div>'
   ) : emptyState({ ico: 'file', title: '暂无日志', desc: '新增、修改、删除等操作会自动记录在这里' });
 
-  const pager = total > 1 ? (
-    '<div class="card-ft" style="display:flex;justify-content:center;gap:6px;padding:10px;flex-wrap:wrap">' +
-    Array.from({ length: total }, (_, i) =>
-      '<button class="btn ' + (i + 1 === page ? 'primary' : 'secondary') + ' sm" data-action="log-page" data-page="' + (i + 1) + '">' + (i + 1) + '</button>'
-    ).join('') + '</div>'
-  ) : '';
 
   return `
   <div class="page-hero">
@@ -2474,7 +2547,7 @@ function viewLogs() {
       <div><div class="card-title">共 ${list.length} 条</div><div class="card-sub">最多保留最近 5000 条</div></div>
     </div>
     <div class="card-bd flush">${body}</div>
-    ${pager}
+    ${pg.html}
   </div>`;
 }
 
@@ -2617,9 +2690,8 @@ function viewAdvances() {
     status: advanceInfo(a).status,
     text: `${a.userName || ''} ${a.reason || ''}`
   }));
-  const PAGE = 15;
-  const page = Math.min(Math.max(1, fs.page || 1), Math.max(1, Math.ceil(filtered.length / PAGE)));
-  const list = filtered.slice((page - 1) * PAGE, page * PAGE);
+  const pg = listPager(filtered.length, 'advance', JSON.stringify(fs));
+  const list = filtered.slice(pg.start, pg.start + pg.size);
 
   /* 顶部汇总仍按全量统计，不受筛选影响 */
   const sum = allList.reduce((s, a) => {
@@ -2679,7 +2751,7 @@ function viewAdvances() {
         <tbody>${rows}</tbody></table></div>`
       : emptyState({ ico: 'wallet', title: '还没有借支记录', desc: '员工预支差旅、采购等费用时在这里登记，发放后自动生成支出流水',
           actions: `<button class="btn primary" data-action="new-advance">${icon('plus', 15)} 申请借支</button>` })}
-      ${filtered.length > PAGE ? pager(filtered.length, page, PAGE, 'advance-page') : ''}
+      ${pg.html}
     </div>
   </div>`;
 }
@@ -2694,9 +2766,8 @@ function viewInvoices() {
     overdue: invoiceOverdue(i),
     text: `${i.party || ''} ${i.number || ''} ${i.note || ''}`
   }));
-  const PAGE = 15;
-  const page = Math.min(Math.max(1, fs.page || 1), Math.max(1, Math.ceil(filtered.length / PAGE)));
-  const list = filtered.slice((page - 1) * PAGE, page * PAGE);
+  const pg = listPager(filtered.length, 'invoice', JSON.stringify(fs));
+  const list = filtered.slice(pg.start, pg.start + pg.size);
 
   const pend = allList.filter(i => i.status !== 'done');
   const pendAmt = round2(pend.reduce((s, i) => s + num(i.amount), 0));
@@ -2752,7 +2823,7 @@ function viewInvoices() {
         <tbody>${rows}</tbody></table></div>`
       : emptyState({ ico: 'receipt', title: '没有未回票据', desc: '付款后如果发票没到，在这里登记，到期会自动提醒',
           actions: `<button class="btn primary" data-action="new-invoice">${icon('plus', 15)} 登记未回票据</button>` })}
-      ${filtered.length > PAGE ? pager(filtered.length, page, PAGE, 'invoice-page') : ''}
+      ${pg.html}
     </div>
   </div>`;
 }
@@ -2828,7 +2899,7 @@ function viewDrill() {
     const pct = sum !== 0 ? (r.value / sum * 100) : 0;
     const w = Math.round(Math.abs(r.value) / max * 100);
     return `<tr>
-      <td><div class="cell-main">${esc(r.co.name)}${r.co.isParent ? ' <span class="pill move">总公司</span>' : ''}</div>
+      <td><div class="cell-main">${esc(r.co.name)}${hqBadge(r.co)}</div>
         <div class="cell-sub">${r.co.accounts.length} 个账户</div></td>
       <td class="tr cell-amount ${r.value >= 0 ? 'in' : 'out'}">${fmt(r.value)}</td>
       <td class="tr" style="color:var(--muted)">${sum !== 0 ? pct.toFixed(1) + '%' : '—'}</td>

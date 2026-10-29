@@ -72,6 +72,9 @@ contextBridge.exposeInMainWorld('desktop', {
     onGdriveFail: cb => ipcRenderer.on('backup:gdrive-fail', (_e, msg) => cb(msg))
   },
 
+  /* 系统能力：显卡合成是否可用（用于自动切换「流畅模式」） */
+  gpu: () => ipcRenderer.invoke('sys:gpu'),
+
   /* 关闭窗口时的选择：quit / background / never-ask */
   closeAction: action => ipcRenderer.invoke('app:close-action', action)
 });
