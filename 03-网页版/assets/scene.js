@@ -42,7 +42,9 @@
     if (opts.offsetY) group.position.y = opts.offsetY;
     scene.add(group);
 
-    const color = opts.color || 0xc7d2fe;
+    /* 深色主题：线框与粒子改用更沉静的柔和紫、降低透明度，避免在深底上过亮（专项走查） */
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    const color = isDark ? (opts.darkColor || 0x818cf8) : (opts.color || 0xc7d2fe);
     const shapes = [];
     const geoPool = [
       new THREE.IcosahedronGeometry(1.45, 0),
@@ -56,7 +58,7 @@
       const geo = geoPool[i % geoPool.length];
       const mat = new THREE.MeshBasicMaterial({
         color, wireframe: true, transparent: true,
-        opacity: 0.18 + i * 0.07
+        opacity: (0.18 + i * 0.07) * (isDark ? 0.7 : 1)
       });
       const mesh = new THREE.Mesh(geo, mat);
       mesh.position.set((i - (n - 1) / 2) * spread, i % 2 ? 0.55 : -0.45, -i * 0.9);
@@ -80,8 +82,9 @@
     const pGeo = new THREE.BufferGeometry();
     pGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     const pMat = new THREE.PointsMaterial({
-      color: opts.dotColor || 0xe0e7ff, size: opts.dotSize || 0.042,
-      transparent: true, opacity: 0.68, sizeAttenuation: true, depthWrite: false
+      color: isDark ? (opts.darkDotColor || 0x6366f1) : (opts.dotColor || 0xe0e7ff),
+      size: opts.dotSize || 0.042,
+      transparent: true, opacity: isDark ? 0.45 : 0.68, sizeAttenuation: true, depthWrite: false
     });
     const points = new THREE.Points(pGeo, pMat);
     group.add(points);

@@ -239,7 +239,7 @@ function createWindow() {
     title: '合资金账 FundMerge',
     backgroundColor: '#f4f6fa',
     icon: path.join(__dirname, '..', 'build', 'icon.ico'),
-    autoHideMenuBar: false,
+    autoHideMenuBar: true,   /* 隐藏「文件/编辑/视图/帮助」菜单栏；快捷键（Ctrl+N/S/O、缩放）仍然有效，按 Alt 可临时唤出 */
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -251,6 +251,10 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, '..', 'index.html'));
+
+  /* 双保险：部分 Windows 环境下 autoHideMenuBar 会在首次显示时闪一下菜单栏，
+     显式再隐藏一次，保证首帧就没有那条 25px 的横条 */
+  if (mainWindow.setMenuBarVisibility) mainWindow.setMenuBarVisibility(false);
 
   mainWindow.once('ready-to-show', () => {
     /* 窗口成功显示 → 本次渲染正常，清掉崩溃标记 */
@@ -438,6 +442,25 @@ ipcMain.handle('app:open-data-folder', () => {
   ensureDir();
   shell.openPath(DATA_DIR);
   return { ok: true };
+});
+
+/* 显卡合成状态：渲染层据此自动决定是否进入「流畅模式」。
+   软件合成（虚拟机 / 远程桌面 / 坏驱动）下，CSS 动画与滤镜会明显掉帧。 */
+ipcMain.handle('sys:gpu', () => {
+  try {
+    const st = app.getGPUFeatureStatus() || {};
+    const compositing = String(st.gpu_compositing || '');
+    return {
+      ok: true,
+      compositing,
+      hardware: compositing.indexOf('disabled') !== -1 ? false : true,
+      rasterization: String(st.rasterization || ''),
+      webgl: String(st.webgl || ''),
+      softwareRender
+    };
+  } catch (e) {
+    return { ok: false, hardware: true, error: String(e && e.message || e) };
+  }
 });
 
 ipcMain.handle('app:open-manual', async () => {

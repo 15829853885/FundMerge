@@ -7,60 +7,183 @@
 
 /* ---------------------------------- 提示条 -------------------------------- */
 
+/* 每条 Toast 带一个自增 generation：退场回调只移除自己那一条，
+   避免"上一条的定时器把后一条刚插入的节点删掉"这类竞态。 */
+let toastSeq = 0;
+
+function dismissToast(el) {
+  if (!el || el.dataset.leaving === '1') return;        /* 幂等：手动与自动同时触发只走一次 */
+  el.dataset.leaving = '1';
+  if (el.dataset.timer) { clearTimeout(Number(el.dataset.timer)); el.dataset.timer = ''; }
+  el.classList.add('is-leaving');                       /* 退场交给 CSS 令牌，慢档才会跟着变慢 */
+  const gen = el.dataset.gen;
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    if (el.dataset.gen === gen) el.remove();
+  };
+  el.addEventListener('transitionend', finish, { once: true });
+  setTimeout(finish, 300);                              /* 兜底：transitionend 不触发（被移出文档等）也能清理 */
+}
+
 function toast(msg, tone = '') {
+  const gen = String(++toastSeq);
   const el = document.createElement('div');
   el.className = 'toast ' + tone + (tone === 'countdown' ? ' is-countdown' : '');
+  el.dataset.gen = gen;
   const ico = tone === 'ok' ? icon('check', 14) : tone === 'err' ? icon('alert', 14) : icon('info', 14);
   el.innerHTML = ico + '<span>' + esc(msg) + '</span>';
+  /* 读屏通告：错误用 alert（assertive，会打断当前朗读），其余用 status（polite）。
+     容器 #toast-root 已是 aria-live="polite"，这里按条覆盖，错误才能及时播报。 */
+  el.setAttribute('role', tone === 'err' ? 'alert' : 'status');
+  el.addEventListener('click', () => dismissToast(el));  /* 手动关闭与自动退场共用同一条幂等路径 */
   $('#toast-root').appendChild(el);
-  setTimeout(() => {
-    el.style.transition = 'opacity .2s, transform .2s';
-    el.style.opacity = '0';
-    el.style.transform = 'translateY(6px)';
-    setTimeout(() => el.remove(), 220);
-  }, tone === 'countdown' ? 4000 : 2200);
+  el.dataset.timer = String(setTimeout(() => dismissToast(el), tone === 'countdown' ? 4000 : 2200));
 }
 
 /* ---------------------------------- 弹窗 ---------------------------------- */
 
+/* 栈元素结构：{ backdrop, trigger, closing, removed }
+   trigger 记录打开前的焦点元素，**关闭动画结束后**才还原，避免焦点落在正在消失的节点上。 */
 const modalStack = [];
+const FOCUS_SEL = 'a[href], button:not([disabled]), input:not([type=hidden]):not([disabled]), ' +
+                  'select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function topModal() { return modalStack[modalStack.length - 1]; }
+
+function modalFocusables(backdrop) {
+  return [...backdrop.querySelectorAll(FOCUS_SEL)].filter(el => el.getClientRects().length);
+}
+
+function focusInto(backdrop) {
+  const target = modalFocusables(backdrop)[0] || backdrop.querySelector('.modal');
+  if (!target) return;
+  if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+  try { target.focus({ preventScroll: true }); } catch (e) { target.focus(); }
+}
+
+/* 背景 inert：弹窗期间 #root 不可聚焦、读屏不读。
+   #toast-root 在 #root 之外，因此错误提示仍能播报，不会被一起静音。 */
+function setBackgroundInert(on) {
+  const app = document.getElementById('root');
+  if (!app) return;
+  if (on) {
+    app.setAttribute('inert', '');
+    app.setAttribute('aria-hidden', 'true');
+  } else {
+    app.removeAttribute('inert');
+    app.removeAttribute('aria-hidden');
+  }
+}
 
 function openModal(html, opts = {}) {
-  const root = $('#modal-root');
-  const current = root.lastElementChild;
-  if (current) current.style.display = 'none';
+  const root = document.getElementById('modal-root');
+  const prevEntry = topModal();
+  if (prevEntry) {
+    if (prevEntry.closing) finalizeClose(prevEntry);   /* 上一层还在退场：先收干净，避免两层同时可见 */
+    else {
+      prevEntry.backdrop.style.display = 'none';
+      prevEntry.backdrop.setAttribute('inert', '');
+      prevEntry.backdrop.setAttribute('aria-hidden', 'true');
+    }
+  }
 
   const holder = document.createElement('div');
   holder.innerHTML = `<div class="modal-backdrop">${html}</div>`;
   const backdrop = holder.firstElementChild;
   root.appendChild(backdrop);
-  modalStack.push(backdrop);
+  const entry = { backdrop, trigger: document.activeElement, closing: false, removed: false };
+  modalStack.push(entry);
+
+  /* 弹窗里的可点选项多为 div（如关闭账套的三选一），同样需要键盘可达 */
+  if (typeof enhanceA11y === 'function') enhanceA11y(backdrop);
 
   if (window.Scene3D && Scene3D.pauseScenes) Scene3D.pauseScenes();
   document.body.style.overflow = 'hidden';
+  setBackgroundInert(true);
+
   backdrop.addEventListener('mousedown', e => { if (e.target === backdrop) closeModal(); });
 
-  const focusable = backdrop.querySelector('input:not([type=hidden]), select, textarea');
-  if (focusable && !opts.noFocus) setTimeout(() => focusable.focus(), 50);
+  /* Tab 循环：只有最上层响应，防止 Tab 跑到底下那层 */
+  backdrop.addEventListener('keydown', e => {
+    if (e.key !== 'Tab' || topModal() !== entry) return;
+    const items = modalFocusables(backdrop);
+    if (!items.length) { e.preventDefault(); focusInto(backdrop); return; }
+    const first = items[0], last = items[items.length - 1];
+    const active = document.activeElement;
+    if (e.shiftKey && (active === first || !backdrop.contains(active))) {
+      e.preventDefault(); last.focus();
+    } else if (!e.shiftKey && (active === last || !backdrop.contains(active))) {
+      e.preventDefault(); first.focus();
+    }
+  });
+
+  if (!opts.noFocus) requestAnimationFrame(() => focusInto(backdrop));
+}
+
+/* 焦点守卫：异步渲染把焦点节点换掉后，焦点会落回 body，这里把它拉回最上层弹窗。
+   退场期间不接管，否则会和"关闭后还原焦点"打架。 */
+document.addEventListener('focusin', e => {
+  const entry = topModal();
+  if (!entry || entry.closing) return;
+  if (entry.backdrop.contains(e.target)) return;
+  focusInto(entry.backdrop);
+});
+
+function finalizeClose(entry) {
+  if (!entry || entry.removed) return;
+  entry.removed = true;
+  const { backdrop, trigger } = entry;
+  const idx = modalStack.indexOf(entry);
+  if (idx >= 0) modalStack.splice(idx, 1);
+  backdrop.remove();
+
+  const prevEntry = topModal();
+  if (prevEntry) {
+    prevEntry.backdrop.style.display = '';
+    prevEntry.backdrop.removeAttribute('inert');
+    prevEntry.backdrop.removeAttribute('aria-hidden');
+    document.body.style.overflow = 'hidden';
+    focusInto(prevEntry.backdrop);
+    return;
+  }
+  const root = document.getElementById('modal-root');
+  if (root) root.innerHTML = '';
+  document.body.style.overflow = '';
+  setBackgroundInert(false);
+  if (window.Scene3D && Scene3D.resumeScenes) Scene3D.resumeScenes();
+  /* 关闭动画结束之后才还原焦点 */
+  if (trigger && document.contains(trigger) && typeof trigger.focus === 'function') {
+    try { trigger.focus({ preventScroll: true }); } catch (e) { trigger.focus(); }
+  }
 }
 
 function closeModal() {
   closeCatPicker();
   closePopover();
 
-  const root = $('#modal-root');
-  const top = modalStack.pop();
-  if (top) top.remove();
-
-  const prev = modalStack[modalStack.length - 1];
-  if (!prev && window.Scene3D && Scene3D.resumeScenes) Scene3D.resumeScenes();
-  if (prev) {
-    prev.style.display = '';
-    document.body.style.overflow = 'hidden';
-  } else {
-    root.innerHTML = '';
+  const entry = topModal();
+  if (!entry) {
+    const root = document.getElementById('modal-root');
+    if (root) root.innerHTML = '';
     document.body.style.overflow = '';
+    setBackgroundInert(false);
+    return;
   }
+  if (entry.closing) return;                       /* 幂等：连按 Esc 不会重复触发 */
+  entry.closing = true;
+  entry.backdrop.classList.add('is-closing');
+  entry.backdrop.setAttribute('inert', '');        /* 退场期间不可再交互 */
+
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    finalizeClose(entry);
+  };
+  entry.backdrop.addEventListener('animationend', finish, { once: true });
+  setTimeout(finish, 240);                         /* 兜底：减少动效/关闭动画被禁用时也能收尾 */
 }
 
 function modalShell({ title, sub, body, footer, cls = '' }) {
@@ -132,6 +255,67 @@ function guardChange({ title, message, confirmText = '确认修改', level = 'co
     requireCode: level === 'code',
     onConfirm
   });
+}
+
+/* 管理员密码验证（阶段三 9 / 12）
+   敏感改动在真正写库之前，先验证「当前登录者本人」的密码。
+   取消或验证失败都不会调用 onConfirm，数据保持原样。
+   校验复用 core.js 的 verifyCurrentPassword（PBKDF2，和登录同一套哈希），不另造一套判断。 */
+function requireAdminPassword({ title = '需要管理员验证', message = '', confirmText = '验证并继续', onConfirm }) {
+  if (!isAdmin()) { toast('只有管理员可以执行此操作', 'err'); return; }
+  confirmHandler = null;
+
+  openModal(modalShell({
+    title: esc(title),
+    cls: 'slim',
+    body: `<form id="ap-form">
+      <div class="modal-bd">
+        <p style="font-size:13px;line-height:1.75;color:var(--ink-3)">${message || '这是会影响账本数据的操作，请输入当前管理员账号的登录密码。'}</p>
+        <label class="field" style="margin-top:12px"><span class="lbl">管理员密码</span>
+          <input type="password" id="ap-input" autocomplete="current-password" placeholder="请输入登录密码">
+        </label>
+        <div class="auth-err" id="ap-err" hidden style="margin-top:8px"></div>
+      </div>
+      <div class="modal-ft"><div class="spacer"></div>
+        <button type="button" class="btn secondary" data-action="close-modal">取消</button>
+        <button type="submit" class="btn primary" id="ap-ok">${esc(confirmText)}</button>
+      </div>
+    </form>`
+  }), { noFocus: true });
+
+  const form = $('#ap-form'), input = $('#ap-input'), errBox = $('#ap-err'), okBtn = $('#ap-ok');
+  if (!form || !input) return;
+
+  const fail = msg => {
+    if (errBox) { errBox.hidden = false; errBox.textContent = msg; }
+    input.classList.remove('is-bad'); void input.offsetWidth; input.classList.add('is-bad');
+    input.value = ''; input.focus();
+  };
+
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const pw = input.value;
+    if (!pw) return fail('请输入密码');
+    if (okBtn) { okBtn.disabled = true; okBtn.textContent = '验证中…'; }
+    let passed = false;
+    try { passed = await verifyCurrentPassword(pw); } catch (e2) { passed = false; }
+    if (!passed) {
+      if (okBtn) { okBtn.disabled = false; okBtn.textContent = confirmText; }
+      return fail('密码不正确，请重新输入');
+    }
+    closeModal();
+    if (typeof onConfirm === 'function') onConfirm();
+  });
+
+  setTimeout(() => input.focus(), 90);
+}
+
+/* 关闭当前所有弹窗（含底层表单弹窗）
+   保存类弹窗上再叠一层确认 / 密码弹窗时，只调用一次 closeModal() 关的是最上层，
+   底层表单会留在屏幕上（阶段三 8「保存成功后自动关闭」）。 */
+function closeAllModals() {
+  let guard = 0;
+  while (modalStack.length && guard++ < 20) finalizeClose(modalStack[modalStack.length - 1]);
 }
 
 /* ---------------------------------- 浮层 ---------------------------------- */
@@ -414,7 +598,9 @@ function barChart(rows, opts = {}) {
 }
 
 function donutChart(rows, opts = {}) {
-  const size = opts.size || 168, r = size / 2 - 12, cx = size / 2, cy = size / 2;
+  /* 半径要留出「悬停加粗到 27」的余量：r + 27/2 必须小于 size/2，
+     否则加粗后的扇区会被 SVG viewBox 裁掉一块（阶段三 4） */
+  const size = opts.size || 168, r = size / 2 - 16, cx = size / 2, cy = size / 2;
   const total = rows.reduce((s, x) => s + x.value, 0);
   if (!total) return `<div class="chart-empty" style="height:${size}px">暂无数据</div>`;
   const C = 2 * Math.PI * r;
@@ -442,6 +628,35 @@ function donutChart(rows, opts = {}) {
   </div>`;
 }
 
+/* 悬浮提示定位（阶段三 1）
+   原先 tip 固定画在锚点上方 26px，且 .chart-wrap 是 overflow:hidden，
+   于是折线最高点、最左/最右点的金额会被容器裁掉一截。
+   现在：先写入内容并 show，量到真实尺寸后再定位——横向夹进容器内，纵向放不下就翻到锚点下方。 */
+function placeChartTip(wrap, tip, hit) {
+  const wr = wrap.getBoundingClientRect();
+  const hr = hit.getBoundingClientRect();
+  tip.classList.add('show');
+  const tw = tip.offsetWidth, th = tip.offsetHeight;
+  const gap = 8, edge = 4;
+
+  /* 横向：以命中区中心为锚点，整体夹在容器内，容器再窄也保证两端不出血 */
+  const cx = hr.left - wr.left + hr.width / 2;
+  const half = tw / 2;
+  let left = cx;
+  if (wr.width >= tw + edge * 2) left = Math.min(Math.max(cx, half + edge), wr.width - half - edge);
+  else left = wr.width / 2;
+  tip.style.left = left.toFixed(1) + 'px';
+
+  /* 纵向：优先画在命中区上方，顶到容器上沿就翻到下方；再放不下就贴边显示 */
+  let top = hr.top - wr.top - th - gap;
+  if (top < edge) {
+    const below = hr.top - wr.top + hr.height + gap;
+    top = (below + th <= wr.height - edge) ? below : edge;
+  }
+  if (top + th > wr.height - edge) top = Math.max(edge, wr.height - th - edge);
+  tip.style.top = top.toFixed(1) + 'px';
+}
+
 function initCharts(scope = document) {
   $$('[data-chart]', scope).forEach(wrap => {
     const tip = wrap.querySelector('.chart-tip');
@@ -449,12 +664,8 @@ function initCharts(scope = document) {
     wrap.addEventListener('mouseover', e => {
       const hit = e.target.closest('.hit');
       if (!hit) return;
-      const wr = wrap.getBoundingClientRect();
-      const hr = hit.getBoundingClientRect();
       tip.innerHTML = `${hit.dataset.label}<br><b>${fmt(Number(hit.dataset.value))}</b>`;
-      tip.style.left = (hr.left - wr.left + hr.width / 2) + 'px';
-      tip.style.top = (hr.top - wr.top + 26) + 'px';
-      tip.classList.add('show');
+      placeChartTip(wrap, tip, hit);
     });
     wrap.addEventListener('mouseleave', () => tip.classList.remove('show'));
   });

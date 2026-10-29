@@ -71,6 +71,12 @@ function openTxModal(id, opts) {
               <input type="number" name="amount" min="0.01" step="0.01" inputmode="decimal" value="${tx ? tx.amount : ''}" placeholder="0.00" required>
             </div>
           </label>
+          <label class="field hidden" data-role="to-amount"><span class="lbl">到账金额（转入账户币种）</span>
+            <div class="input-affix"><span class="prefix" data-role="to-cur"></span>
+              <input type="number" name="toAmount" min="0.01" step="0.01" inputmode="decimal"
+                     value="${tx && tx.toAmount != null ? tx.toAmount : ''}" placeholder="按汇率自动换算">
+            </div>
+          </label>
           <div class="field" data-role="cat-field"><span class="lbl">分类</span><div id="cat-holder">${categoryPickerHTML({ value: catId, kind: type === 'transfer' ? 'out' : type })}</div></div>
           <label class="field"><span class="lbl">往来单位 / 对方</span><input type="text" name="counterparty" value="${tx ? esc(tx.counterparty || '') : ''}" placeholder="客户、供应商、员工"></label>
           <label class="field"><span class="lbl">凭证号</span>
@@ -80,7 +86,7 @@ function openTxModal(id, opts) {
             </div>
           </label>
           <label class="field span-2"><span class="lbl">摘要</span><input type="text" name="summary" value="${tx ? esc(tx.summary || '') : ''}" placeholder="这笔钱是做什么的"></label>
-          <label class="field"><span class="lbl">归属项目</span>
+          <label class="field" data-role="project-field"><span class="lbl">归属项目</span>
             <select name="projectId">
               <option value="">不归属项目</option>
               ${ensureProjectList(COMPANY).filter(p => (p.status || 'active') !== 'done').map(p =>
@@ -115,13 +121,40 @@ function openTxModal(id, opts) {
     $('[data-role=to-acc]', form).classList.toggle('hidden', t !== 'transfer');
     $('[data-role=acc-label]', form).textContent = t === 'in' ? '收款账户' : t === 'out' ? '付款账户' : '转出账户';
     $('[data-role=cat-field]', form).classList.toggle('hidden', t === 'transfer');
+    const pf = $('[data-role=project-field]', form);
+    if (pf) pf.classList.toggle('hidden', t === 'transfer');
     holder.innerHTML = categoryPickerHTML({ value: '', kind: t === 'transfer' ? 'out' : t });
     form.elements.accountId.innerHTML = accOpt(usable[0].id, t === 'out');
     updateHint();
   };
 
-  $$('.seg-btn', seg).forEach(b => b.addEventListener('click', () => setType(b.dataset.txtype)));
-  form.elements.accountId.addEventListener('change', updateHint);
+  /* 跨币种转账：转入账户按目标币种入账，金额需单独确认（R-02） */
+  const toAmtField = $('[data-role=to-amount]', form);
+  const accIdOf = v => String(v || '').indexOf('gp:') === 0 ? String(v).slice(3) : String(v || '');
+  const syncToAmount = () => {
+    const t = form.dataset.type;
+    const fromAcc = accById(accIdOf(form.elements.accountId.value));
+    const toRawV = String(form.elements.toAccountId.value || '');
+    const toAcc = toRawV.indexOf('co:') === 0 ? null : accById(toRawV);
+    const cross = t === 'transfer' && !!fromAcc && !!toAcc && accCurrency(fromAcc) !== accCurrency(toAcc);
+    if (!toAmtField) return;
+    toAmtField.classList.toggle('hidden', !cross);
+    if (!cross) { if (form.elements.toAmount) form.elements.toAmount.value = ''; return; }
+    const curEl = $('[data-role=to-cur]', form);
+    if (curEl) curEl.textContent = (CURRENCIES[accCurrency(toAcc)] || {}).symbol || '';
+    const amt = round2(num(form.elements.amount.value));
+    const r1 = baseRate(accCurrency(fromAcc), form.elements.date.value);
+    const r2 = baseRate(accCurrency(toAcc), form.elements.date.value);
+    if (amt > 0 && r1 != null && r2 != null && form.elements.toAmount) {
+      form.elements.toAmount.value = round2(amt * r1 / r2);
+    }
+  };
+
+  $$('.seg-btn', seg).forEach(b => b.addEventListener('click', () => { setType(b.dataset.txtype); syncToAmount(); }));
+  form.elements.accountId.addEventListener('change', () => { updateHint(); syncToAmount(); });
+  if (form.elements.toAccountId) form.elements.toAccountId.addEventListener('change', syncToAmount);
+  form.elements.amount.addEventListener('input', syncToAmount);
+  syncToAmount();
   form.dataset.type = type;
   updateHint();
   setTimeout(() => form.elements.amount.focus(), 60);
@@ -207,6 +240,7 @@ function openTxModal(id, opts) {
       type: t,
       toAccountId: t === 'transfer' ? toRaw : '',
       amount,
+      toAmount: (t === 'transfer' && num(fd.get('toAmount')) > 0) ? round2(num(fd.get('toAmount'))) : '',
       categoryId: t === 'transfer' ? '' : fd.get('categoryId'),
       category: t === 'transfer' ? '内部转账' : (catById(fd.get('categoryId')) || {}).name || ''
     });
@@ -440,6 +474,11 @@ function openDebtModal(id, presetType) {
               <input type="number" name="amount" min="0.01" step="0.01" value="${d ? d.amount : ''}" placeholder="0.00" required>
             </div>
           </label>
+          <label class="field"><span class="lbl">计价币种</span>
+            <select name="currency">
+              ${Object.keys(CURRENCIES).map(k => `<option value="${k}" ${(d ? (d.currency || baseCurrency()) : baseCurrency()) === k ? 'selected' : ''}>${CURRENCIES[k].name}（${CURRENCIES[k].symbol}）</option>`).join('')}
+            </select>
+          </label>
           <label class="field"><span class="lbl">发生日期</span><input type="date" name="date" value="${d ? d.date : todayISO()}"></label>
           <label class="field"><span class="lbl">约定结清日期</span><input type="date" name="dueDate" value="${d ? (d.dueDate || '') : ''}"></label>
           <label class="field" data-role="acct-field"><span class="lbl">资金账户</span>
@@ -489,6 +528,7 @@ function openDebtModal(id, presetType) {
       type: curType,
       party,
       amount,
+      currency: CURRENCIES[fd.get('currency')] ? fd.get('currency') : baseCurrency(),
       date: fd.get('date') || todayISO(),
       dueDate: fd.get('dueDate') || '',
       accountId: curType === 'reimburse' ? '' : (fd.get('accountId') || ''),
@@ -592,6 +632,18 @@ function openSettleModal(debtId) {
     if (!(amount > 0)) return toast('金额必须大于 0', 'err');
     if (amount > info.remaining + 0.001) return toast('金额不能超过未结余额', 'err');
 
+    /* 往来款按计价币种登记，资金流水按账户币种入账，需折算 */
+    const debtCur = d.currency || baseCurrency();
+    const accObj = accById(String(fd.get('accountId') || ''));
+    const accCur = accObj ? accCurrency(accObj) : baseCurrency();
+    let txAmount = amount;
+    if (debtCur !== accCur) {
+      const r1 = baseRate(debtCur, fd.get('date') || todayISO());
+      const r2 = baseRate(accCur, fd.get('date') || todayISO());
+      if (r1 == null || r2 == null) return toast(`缺少 ${debtCur} 或 ${accCur} 的汇率，无法折算，请先到设置里录入`, 'err');
+      txAmount = round2(amount * r1 / r2);
+    }
+
     const catName = d.type === 'lend' ? '往来款收回' : d.type === 'borrow' ? '还款' : '报销付款';
     const kind = d.type === 'lend' ? 'in' : 'out';
     const cat = DB.categories.find(c => c.name === catName && c.kind === kind) || DB.categories.find(c => c.kind === kind);
@@ -603,7 +655,7 @@ function openSettleModal(debtId) {
       type: kind,
       accountId: fd.get('accountId'),
       toAccountId: '',
-      amount,
+      amount: txAmount,
       categoryId: cat ? cat.id : '',
       category: cat ? cat.name : catName,
       counterparty: d.party,
@@ -860,7 +912,7 @@ function openUserModal(id) {
               ${DB.companies.map(co => `<label class="chk-item">
                 <input type="checkbox" name="companyIds" value="${co.id}"
                   ${u && (u.companyIds || []).includes(co.id) ? 'checked' : ''}>
-                <span>${esc(co.name)}${co.isParent ? ' · 总公司' : ''}</span>
+                <span>${esc(co.name)}${co.isParent ? ' · 集团总公司' : ''}</span>
               </label>`).join('')}
             </div>
           </div>
@@ -1092,22 +1144,35 @@ async function exportJSON() {
   if (ok) toast('备份文件已导出', 'ok');
 }
 
+/* 备份文件的合法结构：v3 多公司格式（companies[]）或旧的单公司扁平格式 */
+function importShapeOK(data) {
+  if (!data || typeof data !== 'object') return false;
+  if (Array.isArray(data.companies)) return true;
+  return Array.isArray(data.accounts) && Array.isArray(data.transactions);
+}
+
 function applyImport(data) {
   let next;
   try {
-    if (!data || !Array.isArray(data.accounts) || !Array.isArray(data.transactions)) throw new Error('文件结构不正确');
+    if (!importShapeOK(data)) throw new Error('文件结构不正确（既不是多公司账套，也不是旧版单公司备份）');
     next = normalize(data);
   } catch (err) {
     return toast('导入失败：' + err.message, 'err');
   }
+  /* 统计必须按公司取，不能读 next.accounts —— 那是代理属性，此时还指向旧 DB */
+  const cos = next.companies || [];
+  const cur = cos.find(c => c.id === next.meta.activeCompanyId) || cos[0] || {};
+  const accN = (cur.accounts || []).length;
+  const txN = (cur.transactions || []).length;
+
   confirmDialog({
     title: '恢复备份',
     requireCode: true,
-    message: `即将用备份覆盖当前账本：<br>账户 <b>${next.accounts.length}</b> 个，流水 <b>${next.transactions.length}</b> 笔，用户 <b>${next.users.length}</b> 个。<br>当前数据会被替换，建议先导出一份现有备份。`,
+    message: `即将用备份覆盖当前账本：<br>公司 <b>${cos.length}</b> 家 · 当前公司账户 <b>${accN}</b> 个、流水 <b>${txN}</b> 笔 · 用户 <b>${next.users.length}</b> 个。<br>当前数据会被替换，建议先导出一份现有备份。`,
     confirmText: '确认覆盖',
     onConfirm: () => {
       DB = next;
-      CURRENCY = DB.meta.currency;
+      CURRENCY = baseCurrency();
       attachCompanyProxy(DB);
       COMPANY = activeCompany();
       saveDB();
@@ -1276,8 +1341,15 @@ function openVaultFieldModal(fieldId, preset) {
     const fd = new FormData(form);
     const label = String(fd.get('label') || '').trim();
     if (!label) return toast('请填写名称', 'err');
+    const group = fd.get('group') || '其他';
+    /* 重复添加校验：同分组下已存在同名条目就拦下来（阶段三 8） */
+    const dup = (COMPANY.profile.fields || []).find(f =>
+      f.id !== (isEdit ? existing.id : '') &&
+      String(f.group || '') === String(group) &&
+      String(f.label || '').trim().toLowerCase() === label.toLowerCase());
+    if (dup) return toast(`「${group}」下已经有「${label}」了，请勿重复添加`, 'err');
     const payload = {
-      group: fd.get('group') || '其他',
+      group,
       label,
       type: fd.get('type') || 'text',
       value: String(fd.get('value') || ''),
@@ -2788,7 +2860,8 @@ function openFxModal(cur) {
     const rate = num(fd.get('rate'));
     if (!(rate > 0)) return toast('汇率必须大于 0', 'err');
     const date = fd.get('date') || todayISO();
-    guardChange({
+    /* 设置页敏感改动：先过管理员密码，再二次确认（阶段三 12） */
+    adminGuard('汇率', () => guardChange({
       title: '确认保存汇率？',
       message: `1 ${cur} = <b>${rate}</b> ${base}，生效日期 ${date}。`,
       confirmText: '保存',
@@ -2801,10 +2874,10 @@ function openFxModal(cur) {
         arr.sort((a, b) => String(a.date).localeCompare(String(b.date)));
         DB.meta.fx.rates[cur] = arr;
         logAction('新增', { module: '设置', target: `汇率 ${cur}→${base}`, after: `${rate}（${date}）` });
-        saveDB(); closeModal(); render();
+        saveDB(); closeAllModals(); render();
         toast('汇率已保存', 'ok');
       }
-    });
+    }));
   });
 }
 
@@ -2850,6 +2923,10 @@ function openVaultBundleModal() {
     const fd = new FormData(e.target);
     const title = String(fd.get('title') || '').trim();
     if (!title) return toast('请填写卡片名称', 'err');
+    /* 重复添加校验：同一张卡片名已存在就拦下来，避免同一个账号录两遍（阶段三 8） */
+    const dupCard = (p.fields || []).find(f =>
+      f.bundle && String(f.bundleTitle || '').trim().toLowerCase() === title.toLowerCase());
+    if (dupCard) return toast(`已经有名为「${title}」的账号卡片了，请勿重复添加`, 'err');
     const bundle = uid('vb');
     const created = [];
     F.forEach(([k, l, t]) => {
@@ -2868,9 +2945,127 @@ function openVaultBundleModal() {
         p.fields = Array.isArray(p.fields) ? p.fields : [];
         created.forEach(f => p.fields.push(f));
         logAction('新增', { module: '档案', target: '账号卡片 ' + title, after: `${created.length} 条字段` });
-        saveDB(); closeModal(); render();
+        /* 确认弹窗叠在录入弹窗之上，只 closeModal() 会留下录入弹窗不关（阶段三 8） */
+        saveDB(); closeAllModals(); render();
         toast(`已保存 ${created.length} 条`, 'ok');
       }
     });
+  });
+}
+
+/* ------------------------------ 集团总公司实体 ------------------------------ */
+
+/* 集团要「作为独立公司」登记，前提是库里真的有一家公司代表集团。
+   早期版本只能靠公司编辑弹窗里一个不显眼的勾选框设置，用户根本找不到入口，
+   于是出现「选了模式但看不到集团公司」的困惑。这里给出显式入口。 */
+
+function openGroupCompanyModal() {
+  if (!isAdmin()) return toast('只有管理员可以创建集团公司', 'err');
+  const exists = groupHQ();
+  if (exists) return toast(`已经指定「${exists.name}」为集团总公司`, 'err');
+
+  const defName = DB.meta.groupName ? `${DB.meta.groupName}（集团）` : '集团公司';
+
+  openModal(modalShell({
+    title: '创建集团公司',
+    sub: '集团自身也是一家公司，可独立维护档案、账户与流水',
+    cls: 'slim',
+    body: `<form id="group-co-form">
+      <div class="modal-bd">
+        <div class="alert info" style="margin-bottom:14px">${icon('info', 15)}
+          <div>创建后这家公司就是「集团总公司」。它是否计入集团合并，由「设置 → 集团总公司登记方式」控制，随时可改。</div>
+        </div>
+        <div class="form-grid">
+          <label class="field span-2"><span class="lbl">公司名称</span>
+            <input type="text" name="name" value="${esc(defName)}" required maxlength="40" placeholder="例如：Mensah Group"></label>
+          <label class="field"><span class="lbl">简称</span>
+            <input type="text" name="shortName" maxlength="12" placeholder="可选"></label>
+          <label class="field"><span class="lbl">税号 / 注册号</span>
+            <input type="text" name="taxNo" maxlength="40" placeholder="可选"></label>
+          <label class="field span-2"><span class="lbl">备注</span>
+            <input type="text" name="note" maxlength="60" placeholder="可选"></label>
+          <label class="switch span-2"><input type="checkbox" name="syncGroup" checked><span class="track"></span>
+            <span>同时把集团名称设为该公司名称</span></label>
+        </div>
+        <div class="hint" style="margin-top:10px">创建后直接进入「公司档案」，可以补地址、联系方式、银行账号与证照附件。</div>
+      </div>
+      <div class="modal-ft"><div class="spacer"></div>
+        <button type="button" class="btn secondary" data-action="close-modal">取消</button>
+        <button type="submit" class="btn primary">创建并进入档案</button>
+      </div>
+    </form>`
+  }));
+
+  $('#group-co-form').addEventListener('submit', e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const name = String(fd.get('name') || '').trim();
+    if (!name) return toast('请填写公司名称', 'err');
+    if (DB.companies.some(c => c.name === name)) return toast('已有同名公司，请换一个名称', 'err');
+
+    const co = newCompany(name, DB.companies.length);
+    co.shortName = String(fd.get('shortName') || '').trim();
+    co.taxNo = String(fd.get('taxNo') || '').trim();
+    co.note = String(fd.get('note') || '').trim();
+    co.isParent = true;
+    DB.companies.forEach(c => { if (c.id !== co.id) c.isParent = false; });
+    DB.companies.push(co);
+    if (fd.get('syncGroup') === 'on') DB.meta.groupName = name;
+
+    logAction('新增', { module: '公司', target: '集团公司 ' + name, targetId: co.id, after: '设为集团总公司' });
+    switchCompany(co.id);
+    saveDB();
+    closeModal();
+    UI.view = 'profile';
+    renderShell();
+    toast(`已创建「${name}」，可以在这里登记集团资料`, 'ok');
+  });
+}
+
+/* 把已有公司指定为集团总公司 */
+function openGroupPickModal() {
+  if (!isAdmin()) return toast('只有管理员可以指定集团公司', 'err');
+  const list = DB.companies.filter(c => !c.isParent);
+  if (!list.length) return toast('没有可指定的公司，先新建一家', 'err');
+
+  openModal(modalShell({
+    title: '指定集团公司',
+    sub: '选一家现有公司作为集团总公司，其账本数据不变',
+    cls: 'slim',
+    body: `<form id="group-pick-form">
+      <div class="modal-bd">
+        <div class="alert warn" style="margin-bottom:14px">${icon('alert', 15)}
+          <div>若这家公司平时已经在记账，指定后它的数据仍归它自己，只是多了「集团总公司」身份。</div>
+        </div>
+        <div class="field">
+          <span class="lbl">选择公司</span>
+          <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
+            ${list.map((c, i) => `<label class="switch" style="padding:8px 10px;border:1px solid var(--line);border-radius:10px">
+              <input type="radio" name="coId" value="${c.id}" ${i === 0 ? 'checked' : ''}>
+              <span class="track"></span>
+              <span>${esc(c.name)}<span style="color:var(--muted-2);font-size:11.5px"> · ${c.accounts.length} 账户</span></span>
+            </label>`).join('')}
+          </div>
+        </div>
+        <label class="switch" style="margin-top:12px"><input type="checkbox" name="syncGroup"><span class="track"></span>
+          <span>同时把集团名称设为该公司名称</span></label>
+      </div>
+      <div class="modal-ft"><div class="spacer"></div>
+        <button type="button" class="btn secondary" data-action="close-modal">取消</button>
+        <button type="submit" class="btn primary">指定为集团公司</button>
+      </div>
+    </form>`
+  }));
+
+  $('#group-pick-form').addEventListener('submit', e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const co = coById(String(fd.get('coId') || ''));
+    if (!co) return toast('请选择一家公司', 'err');
+    DB.companies.forEach(c => { c.isParent = c.id === co.id; });
+    if (fd.get('syncGroup') === 'on') DB.meta.groupName = co.name;
+    logAction('修改', { module: '公司', target: '集团公司 ' + co.name, targetId: co.id, after: '指定为集团总公司' });
+    saveDB(); closeModal(); renderView();
+    toast(`已指定「${co.name}」为集团总公司`, 'ok');
   });
 }

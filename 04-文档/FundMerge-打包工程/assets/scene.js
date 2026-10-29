@@ -20,7 +20,9 @@
 
     let renderer;
     try {
-      renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, powerPreference: 'low-power' });
+      /* antialias 关掉、像素比固定 1：这是纯装饰层，抗锯齿看不出差别，
+         但 MSAA + 高 DPR 会让每帧的 GPU 开销翻几倍。 */
+      renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: false, powerPreference: 'low-power' });
     } catch (e) {
       return null;                       // 无 WebGL → 保持 CSS 渐变
     }
@@ -28,7 +30,7 @@
 
     const size = () => ({ w: host.clientWidth || 320, h: host.clientHeight || 180 });
     let { w, h } = size();
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+    renderer.setPixelRatio(1);
     renderer.setSize(w, h, false);
 
     const scene = new THREE.Scene();
@@ -40,7 +42,9 @@
     if (opts.offsetY) group.position.y = opts.offsetY;
     scene.add(group);
 
-    const color = opts.color || 0xc7d2fe;
+    /* 深色主题：线框与粒子改用更沉静的柔和紫、降低透明度，避免在深底上过亮（专项走查） */
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    const color = isDark ? (opts.darkColor || 0x818cf8) : (opts.color || 0xc7d2fe);
     const shapes = [];
     const geoPool = [
       new THREE.IcosahedronGeometry(1.45, 0),
@@ -54,7 +58,7 @@
       const geo = geoPool[i % geoPool.length];
       const mat = new THREE.MeshBasicMaterial({
         color, wireframe: true, transparent: true,
-        opacity: 0.18 + i * 0.07
+        opacity: (0.18 + i * 0.07) * (isDark ? 0.7 : 1)
       });
       const mesh = new THREE.Mesh(geo, mat);
       mesh.position.set((i - (n - 1) / 2) * spread, i % 2 ? 0.55 : -0.45, -i * 0.9);
@@ -78,8 +82,9 @@
     const pGeo = new THREE.BufferGeometry();
     pGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     const pMat = new THREE.PointsMaterial({
-      color: opts.dotColor || 0xe0e7ff, size: opts.dotSize || 0.042,
-      transparent: true, opacity: 0.68, sizeAttenuation: true, depthWrite: false
+      color: isDark ? (opts.darkDotColor || 0x6366f1) : (opts.dotColor || 0xe0e7ff),
+      size: opts.dotSize || 0.042,
+      transparent: true, opacity: isDark ? 0.45 : 0.68, sizeAttenuation: true, depthWrite: false
     });
     const points = new THREE.Points(pGeo, pMat);
     group.add(points);
@@ -100,10 +105,19 @@
     const ro = window.ResizeObserver ? new ResizeObserver(resize) : null;
     if (ro) ro.observe(host); else window.addEventListener('resize', resize);
 
+    /* 卡片滚出视口后暂停渲染：总览首屏一屏放得下，但用户往下滚时没必要继续算 */
+    let io = null;
+    if (window.IntersectionObserver) {
+      io = new IntersectionObserver(es => {
+        es.forEach(e => { if (e.isIntersecting) { if (!running && !still) { running = true; raf = requestAnimationFrame(frame); } } else { running = false; cancelAnimationFrame(raf); } });
+      }, { threshold: 0.01 });
+      io.observe(host);
+    }
+
     function frame(now) {
       if (!running) return;
       raf = requestAnimationFrame(frame);
-      if (now && now - last < 32) return;     // 约 30fps，省电
+      if (now && now - last < 41) return;     // 约 24fps，够用且更省电
       last = now || 0;
       t += 0.033;
 
@@ -133,9 +147,11 @@
     return {
       pause() { running = false; cancelAnimationFrame(raf); },
       resume() { if (still || document.hidden || running) return; running = true; raf = requestAnimationFrame(frame); },
+      resize,
       dispose() {
         running = false;
         cancelAnimationFrame(raf);
+        if (io) io.disconnect();
         document.removeEventListener('visibilitychange', onVis);
         if (ro) ro.disconnect(); else window.removeEventListener('resize', resize);
         shapes.forEach(m => { m.material.dispose(); });
@@ -150,28 +166,66 @@
 
   /* ------------------------------ 对外接口 ------------------------------ */
 
-  function pauseScenes() { scenes.forEach(s => { try { s.pause(); } catch (e) {} }); }
-  function resumeScenes() { scenes.forEach(s => { try { s.resume(); } catch (e) {} }); }
+  /* 流畅模式下完全不建 WebGL 上下文 */
+  const perfLow = () => document.documentElement.getAttribute('data-perf') === 'low';
+
+  /* 画布缓存：每次 renderView 都会重建 innerHTML，如果每次都新建 WebGL 上下文，
+     等于每切一次页面就重新编译一遍着色器（实测每次多 20ms 主线程 + GPU 侧抖动）。
+     这里把 canvas 元素与场景一起缓存，重新渲染后直接把旧 canvas 塞回新占位符。 */
+  const cache = new Map();     /* key -> { canvas, ctrl } */
+
+  const OPTS = {
+    hero: { shapes: 2, particles: 56, z: 6.4, offsetX: 2.6, offsetY: -0.15, spread: 1.9, color: 0xc7d2fe, dotColor: 0xffffff, dotSize: 0.05 },
+    other: { shapes: 3, particles: 180, z: 7.2, offsetX: 1.5, spread: 1.55, color: 0xc7d2fe, dotColor: 0xe0e7ff, dotSize: 0.042 }
+  };
+
+  function pauseScenes() { cache.forEach(v => { try { v.ctrl.pause(); } catch (e) {} }); }
+  function resumeScenes() { cache.forEach(v => { try { v.ctrl.resume(); } catch (e) {} }); }
 
   function disposeScenes() {
-    while (scenes.length) {
-      const s = scenes.pop();
-      try { s.dispose(); } catch (e) { /* 忽略 */ }
-    }
+    cache.forEach(v => { try { v.ctrl.dispose(); } catch (e) {} });
+    cache.clear();
   }
 
   function mountScenes(root) {
     if (!window.THREE) return;
-    (root || document).querySelectorAll('canvas[data-scene]').forEach(canvas => {
-      const kind = canvas.dataset.scene;
-      const isHero = kind === 'hero';
-      const s = createAmbient(canvas, isHero
-        ? { shapes: 2, particles: 80, z: 6.4, offsetX: 2.6, offsetY: -0.15, spread: 1.9, color: 0xc7d2fe, dotColor: 0xffffff, dotSize: 0.05 }
-        : { shapes: 3, particles: 300, z: 7.2, offsetX: 1.5, spread: 1.55, color: 0xc7d2fe, dotColor: 0xe0e7ff, dotSize: 0.042 });
-      if (s) scenes.push(s);
+    if (perfLow() || reduceMotion()) { disposeScenes(); return; }
+
+    const doc = root || document;
+    doc.querySelectorAll('canvas[data-scene]').forEach(ph => {
+      const key = ph.dataset.scene;
+      const hit = cache.get(key);
+
+      /* 命中缓存且旧 canvas 已经脱离文档 → 直接换进来，不重建上下文 */
+      if (hit && !hit.canvas.isConnected && ph.parentElement) {
+        ph.parentElement.replaceChild(hit.canvas, ph);
+        try { hit.ctrl.resize(); hit.ctrl.resume(); } catch (e) {}
+        return;
+      }
+      if (hit && hit.canvas.isConnected) return;      /* 已经在位 */
+      if (hit) { try { hit.ctrl.dispose(); } catch (e) {} cache.delete(key); }
+
+      const s = createAmbient(ph, key === 'hero' ? OPTS.hero : OPTS.other);
+      if (s) cache.set(key, { canvas: ph, ctrl: s });
+    });
+
+    /* 清理本轮没被复用的场景。
+       hero 例外：总览是回访最频繁的页面，保留它的上下文可以避免来回切页时
+       反复重建（重建要重编译着色器，肉眼就是「卡一下」）。只有显式 dispose/reset 才释放。 */
+    Array.from(cache.keys()).forEach(k => {
+      if (k === 'hero') return;
+      const v = cache.get(k);
+      if (!v.canvas.isConnected) {
+        try { v.ctrl.dispose(); } catch (e) {}
+        cache.delete(k);
+      }
     });
   }
 
   window.Scene3D = {
-    pauseScenes, resumeScenes, mount: mountScenes, dispose: disposeScenes, available: () => !!window.THREE };
+    pauseScenes, resumeScenes, mount: mountScenes, dispose: disposeScenes,
+    available: () => !!window.THREE && !perfLow(),
+    /* 供设置页切换性能模式后调用：先全部释放，下次 mount 会按新档位决定是否重建 */
+    reset() { disposeScenes(); }
+  };
 })();

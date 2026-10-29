@@ -80,24 +80,64 @@ const isGroupView = () => GROUP_VIEWS.includes(UI.view);
 
 function navHTML() {
   const multi = allowedCompanies().length > 1;
+  const collapsed = navCollapsedMap();
   return NAV.map(g => {
     if (g.multi && !multi) return '';
     const items = g.items.filter(it => !it.admin || isAdmin());
     if (!items.length) return '';
-    return `<div class="nav-group">
-      <div class="nav-label">${g.group}</div>
-      ${items.map(it => {
-        let badge = '';
-        if (it.badge === 'debts' && !isGroupView()) {
-          const n = DB.debts.filter(d => debtInfo(d).status !== 'settled').length;
-          if (n) badge = `<span class="nav-badge">${n}</span>`;
-        }
-        return `<button class="nav-item ${UI.view === it.view ? 'is-active' : ''}" data-action="nav" data-view="${it.view}">
-          ${icon(it.icon, 14)}<span>${it.label}</span>${badge}
-        </button>`;
-      }).join('')}
+    const key = g.group;
+    const hasActive = items.some(it => it.view === UI.view);
+    /* 折叠态取记忆，但当前选中项所在分组强制展开，保证高亮项始终可见（侧边栏分组折叠） */
+    const isCollapsed = !hasActive && !!collapsed[key];
+    return `<div class="nav-group${isCollapsed ? ' is-collapsed' : ''}" data-group="${key}">
+      <button type="button" class="nav-label" data-action="toggle-nav-group" data-group="${key}" aria-expanded="${!isCollapsed}" title="${isCollapsed ? '展开分组' : '收起分组'}">
+        <span>${g.group}</span>${icon('chevronDown', 13, 'class="nav-chev"')}
+      </button>
+      <div class="nav-items">
+        ${items.map(it => {
+          let badge = '';
+          if (it.badge === 'debts' && !isGroupView()) {
+            const n = DB.debts.filter(d => debtInfo(d).status !== 'settled').length;
+            if (n) badge = `<span class="nav-badge">${n}</span>`;
+          }
+          return `<button class="nav-item ${UI.view === it.view ? 'is-active' : ''}" data-action="nav" data-view="${it.view}">
+            ${icon(it.icon, 14)}<span>${it.label}</span>${badge}
+          </button>`;
+        }).join('')}
+      </div>
     </div>`;
   }).join('');
+}
+
+/* 导航分组折叠态：localStorage 记忆，刷新 / 切换项目后保持（侧边栏分组折叠） */
+function navCollapsedMap() {
+  try { return JSON.parse(localStorage.getItem('fm-nav-collapsed') || '{}') || {}; }
+  catch (e) { return {}; }
+}
+
+function toggleNavGroup(key) {
+  const map = navCollapsedMap();
+  map[key] = !map[key];
+  try { localStorage.setItem('fm-nav-collapsed', JSON.stringify(map)); } catch (e) {}
+  const group = document.querySelector('.nav-group[data-group="' + key + '"]');
+  if (group) {
+    const nowCollapsed = !!map[key];
+    group.classList.toggle('is-collapsed', nowCollapsed);
+    const lbl = group.querySelector('.nav-label');
+    if (lbl) lbl.setAttribute('aria-expanded', String(!nowCollapsed));
+  }
+}
+
+/* 当前选中项保持可见：被滚动容器裁掉时，滚动到最近可见（不带动画、不滚页面） */
+function scrollActiveNav() {
+  const active = document.querySelector('#nav .nav-item.is-active');
+  const nav = document.getElementById('nav');
+  if (!active || !nav) return;
+  const nr = nav.getBoundingClientRect();
+  const ar = active.getBoundingClientRect();
+  if (ar.top < nr.top || ar.bottom > nr.bottom) {
+    active.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'auto' });
+  }
 }
 
 function companySwitcherHTML() {
@@ -109,11 +149,22 @@ function companySwitcherHTML() {
       <span class="co-badge" style="--c:${color}">${esc(badge)}</span>
       <span class="co-meta">
         <strong>${g ? esc(groupTitle()) : esc(COMPANY.name)}</strong>
-        <span>${g ? `${DB.companies.length} 家公司 · 合并口径` : `${DB.companies.length} 家公司 · 点击切换`}</span>
+        <span>${g ? `${DB.companies.length} 家公司 · 合并口径` : `${DB.companies.length} 家公司 · 点击切换${COMPANY.isParent ? ' · 集团总公司' : ''}`}</span>
       </span>
       ${icon('chevronDown', 14)}
     </button>
   </div>`;
+}
+
+/* 设置页敏感改动：统一先过管理员密码，验证通过才真正写库（阶段三 12）。
+   只用于会改变账本数据 / 全局配置的操作；主题、动效这类本地偏好不在这里拦。 */
+function adminGuard(task, fn) {
+  requireAdminPassword({
+    title: '验证管理员身份',
+    message: `修改「${task}」会影响账本数据，请输入管理员密码后生效。`,
+    confirmText: '验证并生效',
+    onConfirm: fn
+  });
 }
 
 function renderShell() {
@@ -157,10 +208,44 @@ function renderShell() {
     </main>
   </div>`;
 
+  lastViewKey = '';   /* 外壳重建后必须重置：否则登出再登录落到同一视图时，
+                         animateView 的 key 比对会跳过首屏入场，表现为"登录后硬切" */
   renderView();
 }
 
 function render() { if (SESSION) renderView(); }
+
+/* 通用分页兜底（阶段二）
+   有些视图会一次性渲染全部行、没有统一分页器。这里在渲染后按 UI.pages 隐藏超出当前页的行，
+   并在卡片底部补一个与 listPager 完全相同的分页条——保证全站"总条数/当前页/每页条数/上下页"一致。
+   已经自带 .pager 的视图（流水/往来款/借支/票据/日志）直接跳过，不会出现两条分页。 */
+function autoPageTables(root) {
+  if (!root) return;
+  root.querySelectorAll('.table-wrap > table.tbl').forEach((tbl, i) => {
+    const card = tbl.closest('.card');
+    if (!card || card.querySelector('.pager')) return;
+    const tbody = tbl.tBodies[0];
+    if (!tbody) return;
+    const rows = [...tbody.rows];
+    if (rows.length < 2) return;
+
+    const key = 'auto:' + UI.view + ':' + i;
+    const size = UI.pageSize[key] || 15;
+    const pages = Math.max(1, Math.ceil(rows.length / size));
+    const sig = UI.view + '|' + rows.length;
+    if (UI.pageSig[key] !== sig) { UI.pages[key] = 1; UI.pageSig[key] = sig; }
+    const cur = Math.min(Math.max(1, UI.pages[key] || 1), pages);
+    UI.pages[key] = cur;
+
+    if (rows.length <= size) return;          /* 一页装得下就不出分页条，避免噪声 */
+    const from = (cur - 1) * size, to = from + size;
+    rows.forEach((r, idx) => { r.style.display = (idx >= from && idx < to) ? '' : 'none'; });
+
+    const holder = document.createElement('div');
+    holder.innerHTML = pagerHTML(rows.length, cur, size, pages, key);
+    card.appendChild(holder.firstElementChild);
+  });
+}
 
 function renderView() {
   if (!SESSION) return;
@@ -212,7 +297,8 @@ function renderView() {
     case 'settings': html = viewSettings(); if (DESKTOP && window.desktop.flpack && !UI.packAuto) { window.desktop.flpack.autoStatus().then(s => { UI.packAuto = s; renderView(); }); } break;
     default: html = viewDashboard();
   }
-  if (window.Scene3D) Scene3D.dispose();
+  /* 不在这里销毁 3D：Scene3D.mount 会复用缓存里的 canvas，
+     每次销毁重建等于每切一次页面就重编译一遍着色器。 */
   root.innerHTML = html;
   /* 首次使用：内置管理员尚未设置口令 */
   const pending = DB.users.find(u => u.builtin && u.mustSetPassword);
@@ -253,10 +339,13 @@ function renderView() {
   }
   $$('#nav .nav-item').forEach(b => b.classList.toggle('is-active', b.dataset.view === UI.view));
   const nav = $('#nav');
-  if (nav) nav.innerHTML = navHTML();
+  if (nav) { nav.innerHTML = navHTML(); scrollActiveNav(); }
   const slot = $('#sb-company-slot');
   if (slot) slot.outerHTML = companySwitcherHTML();
   applySidebar();
+  enhanceA11y(document);
+  autoPageTables(root);
+
   animateView(root);
   runCounters(root);
   initCharts(root);
@@ -292,6 +381,7 @@ async function refreshFileStats(manual) {
 /* 页面切换入场动效：只在「视图/公司」真正变化时触发，数据刷新不重放 */
 let lastViewKey = '';
 function animateView(root) {
+  if (perfLow()) return;                 /* 流畅模式不做入场动画，省掉一次强制重排 */
   const key = UI.view + '|' + (COMPANY ? COMPANY.id : '');
   if (key === lastViewKey) return;
   lastViewKey = key;
@@ -461,7 +551,7 @@ function renderAuth(mode) {
     if (!list.length) list = DB.companies;
     const cur = DB.meta.activeCompanyId;
     box.innerHTML = list.map(c =>
-      '<option value="' + c.id + '"' + (c.id === cur ? ' selected' : '') + '>' + esc(c.name) + (c.isParent ? ' · 总公司' : '') + '</option>'
+      '<option value="' + c.id + '"' + (c.id === cur ? ' selected' : '') + '>' + esc(c.name) + (c.isParent ? ' · 集团总公司' : '') + '</option>'
     ).join('');
   };
   const userBox = $('#login-user');
@@ -696,9 +786,47 @@ function setMotionSpeed(s) {
   toast('动效速度：' + ({ slow: '慢', normal: '标准', fast: '快' }[s] || '标准'), 'ok');
 }
 
+/* ---------- 流畅模式（性能档位） ----------
+   背景：装饰性动效（3D 氛围层、入场淡入、悬停阴影）在显卡合成不可用时会被迫走软件渲染，
+   表现为「动一下卡一下」。这里做三档：
+     auto   跟随系统：显卡合成不可用 → 自动流畅
+     smooth 强制流畅：关 3D、关入场动画、关悬停位移
+     rich   强制精细：全部开启
+   注意与「动效开关」的区别：动效开关是审美选择，流畅模式是性能兜底。 */
+const perfMode = () => localStorage.getItem('fm-perf') || 'auto';
+const gpuHardware = () => document.documentElement.getAttribute('data-gpu') !== 'soft';
+function perfLow() {
+  const m = perfMode();
+  if (m === 'smooth') return true;
+  if (m === 'rich') return false;
+  return !gpuHardware();
+}
+function applyPerf() {
+  document.documentElement.setAttribute('data-perf', perfLow() ? 'low' : 'high');
+}
+function setPerfMode(m) {
+  localStorage.setItem('fm-perf', m);
+  applyPerf();
+  if (window.Scene3D && Scene3D.reset) Scene3D.reset();
+  renderView();
+  toast('界面档位：' + ({ auto: '自动', smooth: '流畅优先', rich: '效果优先' }[m] || '自动'), 'ok');
+}
+/* 桌面版问主进程要显卡状态；网页版无从得知，按硬件加速可用处理 */
+async function detectGpu() {
+  let hw = true;
+  if (DESKTOP && window.desktop && window.desktop.gpu) {
+    try {
+      const r = await window.desktop.gpu();
+      hw = !!(r && r.hardware);
+    } catch (e) { hw = true; }
+  }
+  document.documentElement.setAttribute('data-gpu', hw ? 'hw' : 'soft');
+  applyPerf();
+}
+
 /* 数字滚动：只播一次，不循环 */
 function runCounters(root) {
-  if (!root || !motionOn()) return;
+  if (!root || !motionOn() || perfLow()) return;
   const scale = motionScale();
   root.querySelectorAll('[data-count]').forEach(el => {
     const to = num(el.dataset.count);
@@ -738,6 +866,7 @@ function setTheme(setting) {
   const html = document.documentElement;
   html.classList.add('theme-anim');
   applyTheme(setting);
+  if (window.Scene3D && Scene3D.reset) Scene3D.reset();   /* 3D 氛围层感知主题，切换后重建 */
   clearTimeout(window.__themeAnimTimer);
   window.__themeAnimTimer = setTimeout(() => html.classList.remove('theme-anim'), 400);
   renderView();
@@ -955,6 +1084,36 @@ document.addEventListener('change', e => {
   if (el.dataset.action === 'toggle-motion') setMotion(el.checked);
 });
 
+/* 可访问性增强：重绘后调用，幂等、不动布局、不改视觉
+   1) div/tr 等非交互元素上的 data-action 补 tabindex+role —— 否则键盘永远拿不到焦点，
+      指标下钻、进入公司账本这两条主路径对键盘用户完全不可达；
+   2) 表头补 scope，读屏才能把数据格关联到列名；
+   3) 当前导航项补 aria-current，读屏才知道"现在在哪一页"。 */
+function enhanceA11y(scope) {
+  const root = scope || document;
+  root.querySelectorAll('[data-action]').forEach(el => {
+    const tag = el.tagName;
+    if (tag === 'BUTTON' || tag === 'A' || tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    if (el.hasAttribute('tabindex')) return;
+    el.setAttribute('tabindex', '0');
+    el.setAttribute('role', 'button');
+  });
+  root.querySelectorAll('table.tbl thead th:not([scope])').forEach(th => th.setAttribute('scope', 'col'));
+  root.querySelectorAll('.nav-item.is-active:not([aria-current])').forEach(el => el.setAttribute('aria-current', 'page'));
+}
+
+/* 键盘激活：Enter / Space 走与点击同一条 action 通道。
+   button / a / input 由浏览器原生处理，必须跳过，否则同一次按键会触发两遍。 */
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+  const el = e.target.closest('[data-action]');
+  if (!el) return;
+  const tag = el.tagName;
+  if (tag === 'BUTTON' || tag === 'A' || tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  e.preventDefault();
+  el.click();
+});
+
 /* 登录页的注册 / 找回密码跳转 */
 document.addEventListener('click', e => {
   const a = e.target.closest('[data-auth]');
@@ -984,6 +1143,25 @@ document.addEventListener('click', async e => {
       break;
     }
     case 'new-company': openCompanyModal(); break;
+    /* 集团总公司实体（REQ-03 补完）：集团自身也是一家公司 */
+    case 'new-group-company': openGroupCompanyModal(); break;
+    case 'pick-group-company': openGroupPickModal(); break;
+    case 'group-ledger': {
+      if (!switchCompany(id)) break;
+      UI.view = 'dashboard';
+      closePopover();
+      renderShell();
+      toast('已进入「' + COMPANY.name + '」账本', 'ok');
+      break;
+    }
+    case 'group-profile': {
+      if (!switchCompany(id)) break;
+      UI.view = 'profile';
+      closePopover();
+      renderShell();
+      toast('这是集团公司的档案，可登记注册信息与银行账号', 'ok');
+      break;
+    }
     case 'edit-company': openCompanyModal(id); break;
     case 'del-company': {
       const c = coById(id);
@@ -1149,10 +1327,25 @@ document.addEventListener('click', async e => {
     }
 
     /* 预算 */
-    case 'budget-save':
-      saveDB();
-      toast('预算已保存', 'ok');
+    case 'budget-save': {
+      const month = UI.budgetMonth || monthOf(todayISO());
+      const savedMap = DB.meta.budgetSaved || (DB.meta.budgetSaved = {});
+      const commit = () => {
+        savedMap[month] = true;
+        saveDB(); renderView();
+        toast(monthLabel(month) + '预算已保存', 'ok');
+      };
+      /* 首次保存直接生效；已经保存过再改，要先二次确认（阶段三 10） */
+      if (!savedMap[month]) { commit(); break; }
+      guardChange({
+        title: '确认修改预算？',
+        message: `将覆盖 <b>${monthLabel(month)}</b> 已保存过的预算金额。`,
+        confirmText: '确认保存',
+        level: 'plain',
+        onConfirm: () => { commit(); closeModal(); }
+      });
       break;
+    }
     case 'budget-toggle':
       UI.budgetShowAll = !UI.budgetShowAll;
       renderView();
@@ -1180,10 +1373,65 @@ document.addEventListener('click', async e => {
     /* 公司档案 */
     case 'profile-save': {
       const p = COMPANY.profile;
-      $$('[data-profile]').forEach(inp => { p[inp.dataset.profile] = inp.value.trim(); });
-      COMPANY.taxNo = p.taxNo;
-      saveDB(); renderView();
-      toast('公司信息已保存', 'ok');
+      const read = k => {
+        const box = document.querySelector('[data-profile="' + k + '"]');
+        return box ? String(box.value || '').trim() : '';
+      };
+      const legalName = read('legalName'), regNo = read('regNo'), taxNo = read('taxNo');
+      const email = read('email'), phone = read('phone'), website = read('website');
+
+      /* 必填 / 格式校验（阶段三 9）：不通过时给对应字段加红框并提示第一条错误 */
+      const bad = [];
+      const mark = (k, msg) => {
+        const box = document.querySelector('[data-profile="' + k + '"]');
+        if (box && box.closest) {
+          const f = box.closest('.field');
+          if (f) f.classList.add('is-invalid');
+        }
+        bad.push(msg);
+      };
+      if (!legalName) mark('legalName', '公司法定名称不能为空');
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) mark('email', '邮箱格式不正确');
+      if (phone && !V.phone(phone)) mark('phone', '联系电话格式不正确');
+      if (website && !/^https?:\/\/[^\s]+\.[^\s]+/.test(website)) mark('website', '网址需以 http:// 或 https:// 开头');
+      if (taxNo && !V.taxNo(taxNo)) mark('taxNo', '税号只能包含字母、数字和短横线（4–30 位）');
+      if (bad.length) { toast(bad[0], 'err'); break; }
+
+      /* 重复校验：与库里其他公司比对法定名称 / 注册号 / 税号 */
+      const norm = v => String(v == null ? '' : v).trim().toLowerCase();
+      const otherProfile = c => (c && c.profile) || {};
+      const dupCo = DB.companies.find(c => c.id !== COMPANY.id && (
+        (legalName && norm(otherProfile(c).legalName) === norm(legalName)) ||
+        (regNo && norm(otherProfile(c).regNo) === norm(regNo)) ||
+        (taxNo && norm(c.taxNo || otherProfile(c).taxNo) === norm(taxNo))
+      ));
+      if (dupCo) { toast('与「' + dupCo.name + '」的注册信息重复，请核对后修改', 'err'); break; }
+
+      /* 首次录入（档案里还没有法定名称与注册号）免管理员密码验证 */
+      const firstTime = !norm(p.legalName) && !norm(p.regNo);
+      const commit = () => {
+        $$('[data-profile]').forEach(inp => { p[inp.dataset.profile] = inp.value.trim(); });
+        COMPANY.taxNo = p.taxNo;
+        logAction(firstTime ? '新增' : '修改', { module: '档案', target: '公司基本信息', after: p.legalName });
+        saveDB(); renderView();
+        toast('公司信息已保存', 'ok');
+      };
+
+      if (firstTime) { commit(); break; }
+      requireAdminPassword({
+        title: '验证管理员身份',
+        message: '修改公司注册资料属于敏感操作，请输入管理员密码后提交。',
+        confirmText: '验证并继续',
+        onConfirm: () => {
+          guardChange({
+            title: '确认修改基本信息？',
+            message: `即将把「<b>${esc(COMPANY.name)}</b>」的法定名称更新为「<b>${esc(legalName)}</b>」。`,
+            confirmText: '确认保存',
+            level: 'plain',
+            onConfirm: () => { commit(); closeAllModals(); }
+          });
+        }
+      });
       break;
     }
     case 'vault-add': closePopover(); openVaultFieldModal(); break;
@@ -1195,6 +1443,26 @@ document.addEventListener('click', async e => {
       break;
     }
     case 'vault-edit': openVaultFieldModal(id); break;
+    /* 删除整张账号卡片（同一个 bundle 的全部字段）（阶段三 8） */
+    case 'vault-del-bundle': {
+      const b = el.dataset.bundle;
+      const items = (COMPANY.profile.fields || []).filter(f => f.bundle === b);
+      if (!items.length) break;
+      const name = items[0].bundleTitle || '账号卡片';
+      confirmDialog({
+        title: '删除整张账号卡片？',
+        requireCode: true,
+        message: `将删除「<b>${esc(name)}</b>」下的 <b>${items.length}</b> 条信息，此操作不可撤销。`,
+        confirmText: '删除',
+        onConfirm: () => {
+          COMPANY.profile.fields = COMPANY.profile.fields.filter(f => f.bundle !== b);
+          logAction('删除', { module: '档案', target: '账号卡片 ' + name });
+          saveDB(); closeModal(); renderView();
+          toast(`已删除 ${items.length} 条`, 'ok');
+        }
+      });
+      break;
+    }
     case 'vault-del': {
       const f = COMPANY.profile.fields.find(x => x.id === id);
       if (!f) break;
@@ -1266,10 +1534,12 @@ document.addEventListener('click', async e => {
     case 'file-refresh': refreshFileStats(true); break;
     case 'set-data-dir': {
       if (!DESKTOP) break;
-      window.desktop.setDataDir().then(r => {
-        if (!r || r.canceled) return;
-        if (!r.ok) return toast(r.error || '切换失败', 'err');
-        toast('数据目录已切换，重启后生效', 'ok');
+      adminGuard('数据目录', () => {
+        window.desktop.setDataDir().then(r => {
+          if (!r || r.canceled) return;
+          if (!r.ok) return toast(r.error || '切换失败', 'err');
+          toast('数据目录已切换，重启后生效', 'ok');
+        });
       });
       break;
     }
@@ -1318,29 +1588,27 @@ document.addEventListener('click', async e => {
     case 'save-currency': {
       const cur = $('#currency-select').value;
       if (!CURRENCIES[cur]) return toast('不支持的货币', 'err');
-      if (cur !== baseCurrency() && (DB.meta.fx && Object.keys(DB.meta.fx.rates || {}).length)) {
-        const go = () => {
-          DB.meta.fx = DB.meta.fx || { base: cur, rates: {} };
-          DB.meta.fx.base = cur;
-          DB.meta.currency = cur;
-          CURRENCY = cur;
-          saveDB(); renderView();
-          toast('本位币已切换为 ' + CURRENCIES[cur].name, 'ok');
-        };
-        return confirmDialog({
-          title: '切换本位币',
-          message: `本位币将从 <b>${CURRENCIES[baseCurrency()].name}</b> 改为 <b>${CURRENCIES[cur].name}</b>。<br>已有汇率的折算方向会反过来，建议切换后重新核对汇率。`,
-          confirmText: '确认切换',
-          requireCode: true,
-          onConfirm: go
-        });
-      }
-      DB.meta.fx = DB.meta.fx || { base: cur, rates: {} };
-      DB.meta.fx.base = cur;
-      DB.meta.currency = cur;
-      CURRENCY = cur;
-      saveDB(); renderView();
-      toast('本位币已切换为 ' + CURRENCIES[cur].name, 'ok');
+      if (cur === baseCurrency() && DB.meta.currency === cur) return toast('本位币没有变化', 'ok');
+      const go = () => {
+        DB.meta.fx = DB.meta.fx || { base: cur, rates: {} };
+        DB.meta.fx.base = cur;
+        DB.meta.currency = cur;
+        CURRENCY = cur;
+        logAction('修改', { module: '设置', target: '本位币', after: CURRENCIES[cur].name });
+        saveDB(); renderView();
+        toast('本位币已切换为 ' + CURRENCIES[cur].name, 'ok');
+      };
+      adminGuard('本位币', () => {
+        if (cur !== baseCurrency() && (DB.meta.fx && Object.keys(DB.meta.fx.rates || {}).length)) {
+          confirmDialog({
+            title: '切换本位币',
+            message: `本位币将从 <b>${CURRENCIES[baseCurrency()].name}</b> 改为 <b>${CURRENCIES[cur].name}</b>。<br>已有汇率的折算方向会反过来，建议切换后重新核对汇率。`,
+            confirmText: '确认切换',
+            requireCode: true,
+            onConfirm: () => { go(); closeAllModals(); }
+          });
+        } else go();
+      });
       break;
     }
     case 'fx-add': openFxModal(el.dataset.cur); break;
@@ -1398,6 +1666,42 @@ document.addEventListener('click', async e => {
       break;
     }
     case 'acc-filter': UI.accType = el.dataset.type || ''; renderView(); break;
+    /* 预算执行卡 → 预算管理页，并带上对应月份（阶段三 5） */
+    case 'budget-jump': {
+      const m = el.dataset.month || monthOf(todayISO());
+      UI.budgetMonth = m;
+      UI.view = 'budgets';
+      renderView();
+      toast('已进入 ' + monthLabel(m) + '预算', 'ok');
+      break;
+    }
+    /* 待办往来 → 往来款页：带类型 tab；点击具体一笔时再带上往来单位作为筛选（阶段三 6） */
+    case 'debt-jump': {
+      const tab = el.dataset.tab && el.dataset.tab !== 'all' ? el.dataset.tab : (UI.debtTab || 'lend');
+      UI.debtTab = tab;
+      if (!UI.debtFilter) UI.debtFilter = { from: '', to: '', status: '', kw: '', page: 1 };
+      const one = id ? DB.debts.find(x => x.id === id) : null;
+      Object.assign(UI.debtFilter, { status: '', kw: one ? one.party : '', page: 1 });
+      UI.view = 'debts';
+      renderView();
+      toast(one ? '已筛选出「' + one.party + '」的往来' : '已进入未结清往来台账', 'ok');
+      break;
+    }
+    /* 最近流水行 → 资金流水页：带月份区间 + 账户 + 收支类型（阶段三 7） */
+    case 'tx-jump': {
+      const t = DB.transactions.find(x => x.id === id);
+      if (!t) break;
+      const m = monthOf(t.date);
+      UI.txFilter = {
+        from: m + '-01', to: m + '-31',
+        account: t.accountId || '', type: t.type || '',
+        category: '', keyword: '', page: 1
+      };
+      UI.view = 'transactions';
+      renderView();
+      toast('已定位到 ' + t.date + ' 的这笔流水', 'ok');
+      break;
+    }
     /* 台账筛选：清空 / 卡片快捷筛选 / 翻页（G-04） */
     case 'f-clear': {
       const st = ledgerState(el.dataset.f);
@@ -1412,6 +1716,12 @@ document.addEventListener('click', async e => {
       if (k === 'overdue') st.overdue = v;
       else if (k !== '__all') st[k] = v;
       renderView();
+      break;
+    }
+    /* 统一分页（阶段二）：页码与每页条数走同一套状态 */
+    case 'page': {
+      const k = el.dataset.list;
+      if (k) { UI.pages[k] = Math.max(1, num(el.dataset.page) || 1); renderView(); }
       break;
     }
     case 'debt-page': ledgerState('debt').page = num(el.dataset.page); renderView(); break;
@@ -1721,34 +2031,41 @@ document.addEventListener('click', async e => {
       break;
     }
     case 'set-motion-speed': setMotionSpeed(el.dataset.speed); break;
+    case 'set-perf': setPerfMode(el.dataset.mode || 'auto'); break;
     case 'set-parent-mode': {
       const mode = el.dataset.mode === 'registry' ? 'registry' : 'company';
       if (DB.meta.parentMode === mode) break;
-      confirmDialog({
-        title: '更改总公司登记方式',
-        message: mode === 'registry'
-          ? '总公司将<b>不再作为独立公司参与集团合并</b>，其资金与往来不计入集团总额与集团报表。已有数据不会删除，切换回来即可恢复。'
-          : '总公司将<b>作为独立公司参与集团合并</b>，其资金与往来计入集团总额与集团报表。',
-        confirmText: '确认切换',
-        tone: 'primary',
-        onConfirm: () => {
-          DB.meta.parentMode = mode;
-          logAction('修改', { module: '设置', target: '总公司登记方式', after: mode === 'registry' ? '仅登记主体' : '独立公司' });
-          saveDB(); closeModal(); renderView();
-          toast('已切换为「' + (mode === 'registry' ? '仅集团登记主体' : '作为独立公司') + '」', 'ok');
-        }
+      adminGuard('总公司登记方式', () => {
+        confirmDialog({
+          title: '更改总公司登记方式',
+          message: mode === 'registry'
+            ? '总公司将<b>不再作为独立公司参与集团合并</b>，其资金与往来不计入集团总额与集团报表。已有数据不会删除，切换回来即可恢复。'
+            : '总公司将<b>作为独立公司参与集团合并</b>，其资金与往来计入集团总额与集团报表。',
+          confirmText: '确认切换',
+          tone: 'primary',
+          onConfirm: () => {
+            DB.meta.parentMode = mode;
+            logAction('修改', { module: '设置', target: '总公司登记方式', after: mode === 'registry' ? '仅登记主体' : '独立公司' });
+            saveDB(); closeAllModals(); renderView();
+            toast('已切换为「' + (mode === 'registry' ? '仅集团登记主体' : '作为独立公司') + '」', 'ok');
+          }
+        });
       });
       break;
     }
     case 'save-idle': {
       const m = Math.max(1, Math.min(240, num($('#idle-min').value) || 30));
-      localStorage.setItem('fm-idle-min', String(m));
-      armIdle();
-      renderView();
-      toast('已设置 ' + m + ' 分钟无操作自动退出', 'ok');
+      if (String(m) === String(idleMinutes())) return toast('自动退出时间没有变化', 'ok');
+      adminGuard('自动退出时间', () => {
+        localStorage.setItem('fm-idle-min', String(m));
+        armIdle();
+        renderView();
+        toast('已设置 ' + m + ' 分钟无操作自动退出', 'ok');
+      });
       break;
     }
     case 'toggle-sidebar': toggleSidebar(); break;
+    case 'toggle-nav-group': toggleNavGroup(el.dataset.group); break;
     case 'clear-remember': clearRemember(); break;
     case 'open-manual': closePopover(); openManual(); break;
     case 'manual-external': if (DESKTOP) window.desktop.openManual(); break;
@@ -1802,9 +2119,14 @@ document.addEventListener('click', async e => {
       break;
     }
     case 'save-group': {
-      DB.meta.groupName = ($('#group-input').value || '').trim();
-      saveDB(); renderShell();
-      toast(DB.meta.groupName ? `集团名称已设为「${DB.meta.groupName}」` : '已清除集团名称', 'ok');
+      const val = ($('#group-input').value || '').trim();
+      if (val === (DB.meta.groupName || '')) return toast('集团名称没有变化', 'ok');
+      adminGuard('集团名称', () => {
+        DB.meta.groupName = val;
+        logAction('修改', { module: '设置', target: '集团名称', after: val || '（已清除）' });
+        saveDB(); renderShell();
+        toast(DB.meta.groupName ? `集团名称已设为「${DB.meta.groupName}」` : '已清除集团名称', 'ok');
+      });
       break;
     }
     case 'export-json': exportJSON(); break;
@@ -1848,6 +2170,14 @@ document.addEventListener('input', e => {
 });
 
 document.addEventListener('change', e => {
+  /* 分页：每页条数下拉改变 → 回到第一页（阶段二 G 补齐：此前该下拉无 change 处理，是死控件） */
+  const ps = e.target.closest('[data-action="page-size"]');
+  if (ps) {
+    const k = ps.dataset.list;
+    if (k) { UI.pageSize[k] = Math.max(1, num(ps.value) || 15); UI.pages[k] = 1; renderView(); }
+    return;
+  }
+
   const f = e.target.closest('[data-filter]');
   if (f) {
     const key = f.dataset.filter;
@@ -1977,8 +2307,10 @@ bindDonutHover();
 
 (async function boot() {
   applyMotion();
+  applyPerf();          /* 先按上次结论定档，避免首屏用错档位闪一下 */
   applyTheme();
   await loadDB();
+  await detectGpu();    /* 再问主进程要真实显卡状态，必要时降档 */
 
   if (DESKTOP) {
     try { APP_INFO = await window.desktop.info(); } catch (e) { console.error(e); }

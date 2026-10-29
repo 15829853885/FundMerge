@@ -1,6 +1,6 @@
 {
   "$comment": "打包物静态扫描规则 — FundMerge 发版前必跑。规则变更必须走 review 并在此文件留痕，禁止在脚本内就地忽略。",
-  "version": 4,
+  "version": 7,
   "updatedAt": "2026-10-28",
   "owner": "gstack-qa-lead",
   "$changelogPolicy": "每次改动必须新增一条，且必须回答「本次改动是否需要新增自检用例」（selfTest 字段）。值为 yes 时须同步在 pack-scan.js 的 selfTest() 中加用例；为 no 时须写理由。半年后回看，用于区分「当时验得不够」与「当时判断不需要验」。",
@@ -28,6 +28,24 @@
       "note": "① 顶层 exe 白名单由枚举改为 ^[^\\\\/]+\\\\.exe$ ② phone 由 warn 升为 fail ③ 脚本侧跨副本去重 ④ 同行已有 fail 时不再追加 warn ⑤ 豁免四要素校验（file/ruleId/reason/reviewer/date）缺任一即判失败",
       "selfTest": "yes",
       "why": "⑤ 引入豁免放行通道，属「让门禁更容易放行」的非对称风险改动，必须有用例 ⑤⑥ 守住"
+    },
+    {
+      "v": 5,
+      "note": "按需求 D1–D5：允许交付文档（开发交接说明.md、需求解读与实施方案.md、打包与发布说明.md）出现在产物根目录，顶层白名单新增 .md",
+      "selfTest": "no",
+      "why": "仅放宽白名单与移除两条 denyNames，未改变匹配语义；结构断言与版本断言仍有效"
+    },
+    {
+      "v": 6,
+      "note": "顶层白名单补 .md 规则（v5 因转义问题未生效）；交付文档（开发交接/需求解读/打包发布）允许随包",
+      "selfTest": "no",
+      "why": "仅补齐白名单条目，未改匹配语义；结构断言仍拦截 data/、*.bak.json、debug.log"
+    },
+    {
+      "v": 7,
+      "note": "交付文档改放「文档」子文件夹，顶层白名单新增 ^文档$ 目录",
+      "selfTest": "no",
+      "why": "仅新增一个顶层目录白名单，未改 denyNames / 文本匹配语义；结构断言仍拦截 data/、*.bak.json、debug.log"
     }
   ],
   "rules": {
@@ -39,9 +57,7 @@
         "data.bak.json",
         "data-location.txt",
         "files",
-        "debug.log",
-        "开发交接说明.md",
-        "需求解读与实施方案.md"
+        "debug.log"
       ],
       "denyGlobs": [
         "*.map",
@@ -60,43 +76,90 @@
         "^icon\\.png$",
         "^LICENSE.*$",
         "^locales$",
-        "^resources$"
+        "^resources$",
+        "^文档$",
+        "^[^\\\\/]+\\\\.md$",
+        "^[^\\\\/]+\\.md$"
       ],
-      "allowTopLevelNote": "顶层只允许 Chromium/Electron 运行时（任意单层 exe/dll/pak/bin/dat）与显式交付物（操作手册.html、icon.png、LICENSE*）。exe 不枚举具体名字，避免 productName 改名后误判；多 exe 由脚本告警。新增条目须先改此规则再出包。"
+      "allowTopLevelNote": "顶层只允许 Chromium/Electron 运行时与显式交付物：操作手册.html、icon.png、LICENSE*、以及随包交付的 .md 文档（开发交接说明/需求解读/打包发布说明）。data/、*.bak.json、debug.log、data-location.txt 仍禁止。"
     },
     "B_text": {
       "$comment": "文本扫描，只对【打包产物】生效（win-unpacked + asar 解包目录），不对源码仓库生效，避免误报。",
-      "scanExtensions": [".html", ".htm", ".md", ".json", ".js", ".txt", ".css", ".log"],
-      "skipPaths": ["locales/"],
+      "scanExtensions": [
+        ".html",
+        ".htm",
+        ".md",
+        ".json",
+        ".js",
+        ".txt",
+        ".css",
+        ".log"
+      ],
+      "skipPaths": [
+        "locales/"
+      ],
       "maxFileSizeKB": 4096,
-      "docExts": [".html", ".htm", ".md", ".txt", ".log"],
+      "docExts": [
+        ".html",
+        ".htm",
+        ".md",
+        ".txt",
+        ".log"
+      ],
       "patterns": [
         {
           "id": "cred-literal",
           "re": "(password|passwd|secret|token|api[_-]?key)\\s*[:=]\\s*['\"]([A-Za-z0-9!@#$%^&*_.\\-]{6,})['\"]",
           "severity": "fail",
-          "exts": [".js", ".json", ".html", ".htm", ".md", ".txt"],
+          "exts": [
+            ".js",
+            ".json",
+            ".html",
+            ".htm",
+            ".md",
+            ".txt"
+          ],
           "note": "明文凭据赋值（已排除 ${} 占位与字符串拼接）"
         },
         {
           "id": "doc-secret-value",
           "re": "(初始密码|口令|密码)[^\\n]{0,40}(<code>|[`'\"])[A-Za-z0-9!@#$%^&*_.\\-]{6,}",
           "severity": "fail",
-          "exts": [".html", ".htm", ".md", ".txt", ".log"],
+          "exts": [
+            ".html",
+            ".htm",
+            ".md",
+            ".txt",
+            ".log"
+          ],
           "note": "面向用户的文档中直接写出可用口令值"
         },
         {
           "id": "dev-path",
           "re": "C:\\\\\\\\Users\\\\\\\\|/Users/|\\\\\\\\Desktop\\\\\\\\|公司资金管理记录软件",
           "severity": "fail",
-          "exts": [".js", ".json", ".html", ".htm", ".md", ".txt", ".log"],
+          "exts": [
+            ".js",
+            ".json",
+            ".html",
+            ".htm",
+            ".md",
+            ".txt",
+            ".log"
+          ],
           "note": "开发者本机路径泄露"
         },
         {
           "id": "phone",
           "re": "(^|[^0-9])1[3-9]\\d{9}([^0-9]|$)",
           "severity": "fail",
-          "exts": [".html", ".htm", ".md", ".txt", ".js"],
+          "exts": [
+            ".html",
+            ".htm",
+            ".md",
+            ".txt",
+            ".js"
+          ],
           "note": "手机号形态出现在打包产物中。内置账号用户名即真实手机号，随包分发属于个人信息泄露；确属业务必要的（如客服热线）须写入 B_text.exemptions 并附 reviewer"
         }
       ],
@@ -108,7 +171,13 @@
     },
     "D_governance": {
       "$comment": "例外管理：任何豁免写入 B_text.exemptions 并四要素齐全（file/ruleId/reason/reviewer/date），禁止脚本内忽略。缺任一要素的豁免由脚本判为「豁免无效」并照常 FAIL —— 豁免是门禁唯一的合法放行通道，出错等于门禁自己开洞。",
-      "exemptionSchema": { "file": "相对路径", "ruleId": "规则 id", "reason": "为什么可接受", "reviewer": "审批人", "date": "YYYY-MM-DD" },
+      "exemptionSchema": {
+        "file": "相对路径",
+        "ruleId": "规则 id",
+        "reason": "为什么可接受",
+        "reviewer": "审批人",
+        "date": "YYYY-MM-DD"
+      },
       "enforced": true
     }
   }

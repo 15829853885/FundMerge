@@ -912,7 +912,7 @@ function openUserModal(id) {
               ${DB.companies.map(co => `<label class="chk-item">
                 <input type="checkbox" name="companyIds" value="${co.id}"
                   ${u && (u.companyIds || []).includes(co.id) ? 'checked' : ''}>
-                <span>${esc(co.name)}${co.isParent ? ' · 总公司' : ''}</span>
+                <span>${esc(co.name)}${co.isParent ? ' · 集团总公司' : ''}</span>
               </label>`).join('')}
             </div>
           </div>
@@ -1341,8 +1341,15 @@ function openVaultFieldModal(fieldId, preset) {
     const fd = new FormData(form);
     const label = String(fd.get('label') || '').trim();
     if (!label) return toast('请填写名称', 'err');
+    const group = fd.get('group') || '其他';
+    /* 重复添加校验：同分组下已存在同名条目就拦下来（阶段三 8） */
+    const dup = (COMPANY.profile.fields || []).find(f =>
+      f.id !== (isEdit ? existing.id : '') &&
+      String(f.group || '') === String(group) &&
+      String(f.label || '').trim().toLowerCase() === label.toLowerCase());
+    if (dup) return toast(`「${group}」下已经有「${label}」了，请勿重复添加`, 'err');
     const payload = {
-      group: fd.get('group') || '其他',
+      group,
       label,
       type: fd.get('type') || 'text',
       value: String(fd.get('value') || ''),
@@ -2853,7 +2860,8 @@ function openFxModal(cur) {
     const rate = num(fd.get('rate'));
     if (!(rate > 0)) return toast('汇率必须大于 0', 'err');
     const date = fd.get('date') || todayISO();
-    guardChange({
+    /* 设置页敏感改动：先过管理员密码，再二次确认（阶段三 12） */
+    adminGuard('汇率', () => guardChange({
       title: '确认保存汇率？',
       message: `1 ${cur} = <b>${rate}</b> ${base}，生效日期 ${date}。`,
       confirmText: '保存',
@@ -2866,10 +2874,10 @@ function openFxModal(cur) {
         arr.sort((a, b) => String(a.date).localeCompare(String(b.date)));
         DB.meta.fx.rates[cur] = arr;
         logAction('新增', { module: '设置', target: `汇率 ${cur}→${base}`, after: `${rate}（${date}）` });
-        saveDB(); closeModal(); render();
+        saveDB(); closeAllModals(); render();
         toast('汇率已保存', 'ok');
       }
-    });
+    }));
   });
 }
 
@@ -2915,6 +2923,10 @@ function openVaultBundleModal() {
     const fd = new FormData(e.target);
     const title = String(fd.get('title') || '').trim();
     if (!title) return toast('请填写卡片名称', 'err');
+    /* 重复添加校验：同一张卡片名已存在就拦下来，避免同一个账号录两遍（阶段三 8） */
+    const dupCard = (p.fields || []).find(f =>
+      f.bundle && String(f.bundleTitle || '').trim().toLowerCase() === title.toLowerCase());
+    if (dupCard) return toast(`已经有名为「${title}」的账号卡片了，请勿重复添加`, 'err');
     const bundle = uid('vb');
     const created = [];
     F.forEach(([k, l, t]) => {
@@ -2933,7 +2945,8 @@ function openVaultBundleModal() {
         p.fields = Array.isArray(p.fields) ? p.fields : [];
         created.forEach(f => p.fields.push(f));
         logAction('新增', { module: '档案', target: '账号卡片 ' + title, after: `${created.length} 条字段` });
-        saveDB(); closeModal(); render();
+        /* 确认弹窗叠在录入弹窗之上，只 closeModal() 会留下录入弹窗不关（阶段三 8） */
+        saveDB(); closeAllModals(); render();
         toast(`已保存 ${created.length} 条`, 'ok');
       }
     });

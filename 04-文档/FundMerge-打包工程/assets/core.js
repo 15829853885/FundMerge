@@ -5,7 +5,7 @@
 
 'use strict';
 
-const APP_VERSION = '5.0.0';
+const APP_VERSION = '5.0.1';
 const APP_NAME = '合资金账';
 const APP_NAME_EN = 'FundMerge';
 const STORE_KEY = 'fund-ledger-v2';
@@ -113,10 +113,18 @@ function fmtCur(n, cur) {
 /* 需要折算但缺汇率的币种清单（用于页面提示） */
 function missingRateCurrencies() {
   const set = new Set();
-  (DB && DB.companies || []).forEach(co => (co.accounts || []).forEach(a => {
-    const cur = accCurrency(a);
-    if (cur !== baseCurrency() && baseRate(cur) == null) set.add(cur);
-  }));
+  const base = baseCurrency();
+  (DB && DB.companies || []).forEach(co => {
+    (co.accounts || []).forEach(a => {
+      const cur = accCurrency(a);
+      if (cur !== base && baseRate(cur) == null) set.add(cur);
+    });
+    /* 往来款也可能挂外币（R-01） */
+    (co.debts || []).forEach(d => {
+      const cur = d.currency || base;
+      if (cur !== base && baseRate(cur, d.date) == null) set.add(cur);
+    });
+  });
   return [...set];
 }
 
@@ -323,6 +331,7 @@ let UI = {
   trendDays: 30,
   txFilter: { from: '', to: '', account: '', type: '', category: '', keyword: '', page: 1 },
   txPageSize: 15,
+  pages: {}, pageSize: {}, pageSig: {},   /* 统一分页状态（阶段二） */
   debtTab: 'lend',
   reportTab: 'cashflow',
   cfRange: { from: '', to: '' },
@@ -363,13 +372,15 @@ function normalizeCompany(c, idx, base) {
   c.isParent = c.isParent === true;
   c.profile = normalizeProfile(c.profile);
 
-  c.accounts = Array.isArray(c.accounts) ? c.accounts.filter(a => a && a.id) : [];
-  c.transactions = Array.isArray(c.transactions) ? c.transactions.filter(t => t && t.id && t.date) : [];
-  c.debts = Array.isArray(c.debts) ? c.debts : [];
-  c.settlements = Array.isArray(c.settlements) ? c.settlements : [];
-  c.budgets = Array.isArray(c.budgets) ? c.budgets : [];
-  c.categories = Array.isArray(c.categories) && c.categories.length
-    ? c.categories
+  const objs = a => (Array.isArray(a) ? a : []).filter(x => x && typeof x === 'object');
+  c.accounts = objs(c.accounts).filter(a => a.id);
+  c.transactions = objs(c.transactions).filter(t => t.id && t.date);
+  c.debts = objs(c.debts);
+  c.settlements = objs(c.settlements);
+  c.budgets = objs(c.budgets);
+  const catList = objs(c.categories);
+  c.categories = catList.length
+    ? catList
     : clone(DEFAULT_CATEGORIES).map(x => Object.assign({ id: uid('c'), active: true, system: true }, x));
 
   c.categories.forEach(x => {
@@ -414,6 +425,8 @@ function normalizeCompany(c, idx, base) {
     x.type = ['lend', 'borrow', 'reimburse'].includes(x.type) ? x.type : 'lend';
     x.amount = Math.abs(num(x.amount));
     x.date = x.date || todayISO();
+    /* 往来款计价币种（R-01），缺省回落本位币 */
+    x.currency = CURRENCIES[x.currency] ? x.currency : (base || 'GHS');
   });
   c.settlements.forEach(s => { s.amount = Math.abs(num(s.amount)); });
 
@@ -441,7 +454,7 @@ function normalize(raw) {
     }));
   });
   d.meta.groupName = String(d.meta.groupName || '').trim();
-  d.users = Array.isArray(d.users) ? d.users : [];
+  d.users = (Array.isArray(d.users) ? d.users : []).filter(u => u && typeof u === 'object');
   d.users.forEach(u => {
     if (!Array.isArray(u.security)) u.security = [];
     if (!Array.isArray(u.companyIds)) u.companyIds = [];   // 空数组 = 全部公司（管理员）
@@ -474,6 +487,11 @@ function normalize(raw) {
   COMPANY_KEYS.forEach(k => { delete d[k]; });
   delete d.meta.company;
 
+  /* 全部公司都非法（被过滤掉）时兜底建一家，否则下面取 d.companies[0].id 会崩 */
+  if (!d.companies.length) {
+    const fallback = newCompany('我的公司');
+    d.companies = [fallback];
+  }
   if (!d.companies.some(c => c.id === d.meta.activeCompanyId)) {
     d.meta.activeCompanyId = d.companies[0].id;
   }
@@ -723,7 +741,8 @@ function balanceOf(acc, upto, co = COMPANY) {
         else b -= num(t.amount);
       }
     }
-    if (t.type === 'transfer' && t.toAccountId === acc.id) b += num(t.amount);
+    /* 跨币种转账：目标账户按「到账金额」入账，缺失时回落到 amount */
+    if (t.type === 'transfer' && t.toAccountId === acc.id) b += num(t.toAmount != null ? t.toAmount : t.amount);
   }
   return round2(b);
 }
@@ -774,7 +793,7 @@ function accountStats(acc, from, to, co = COMPANY) {
         if (t.direction === 'in') s.transferIn += num(t.amount);
         else s.transferOut += num(t.amount);
       }
-      if (t.toAccountId === acc.id) s.transferIn += num(t.amount);
+      if (t.toAccountId === acc.id) s.transferIn += num(t.toAmount != null ? t.toAmount : t.amount);
     }
   }
   Object.keys(s).forEach(k => { s[k] = round2(s[k]); });
@@ -845,17 +864,21 @@ function debtInfo(d, co = COMPANY) {
 }
 
 function debtTotals(type, co = COMPANY) {
-  let total = 0, remaining = 0, overdue = 0, count = 0;
+  let total = 0, remaining = 0, overdue = 0, count = 0, missing = [];
   (co ? co.debts : []).forEach(d => {
     if (type && d.type !== type) return;
     const info = debtInfo(d, co);
     if (info.status === 'settled') return;
+    /* 往来款按各自计价币种折算成本位币；缺汇率不计入并在页面提示 */
+    const cur = d.currency || baseCurrency();
+    const f = baseRate(cur, d.date);
+    if (f == null) { if (!missing.includes(cur)) missing.push(cur); return; }
     count++;
-    total += num(d.amount);
-    remaining += info.remaining;
-    if (info.overdue) overdue += info.remaining;
+    total += num(d.amount) * f;
+    remaining += info.remaining * f;
+    if (info.overdue) overdue += info.remaining * f;
   });
-  return { total: round2(total), remaining: round2(remaining), overdue: round2(overdue), count };
+  return { total: round2(total), remaining: round2(remaining), overdue: round2(overdue), count, missing };
 }
 
 /* ---------------------------------- 预算 ---------------------------------- */
@@ -1467,9 +1490,9 @@ function projectUsage(projectId, co = COMPANY) {
   let out = 0, inn = 0, count = 0;
   (co.transactions || []).forEach(t => {
     if (t.projectId !== projectId) return;
-    count++;
-    if (t.type === 'out') out += txBase(t, co);
-    else if (t.type === 'in') inn += num(t.amount);
+    /* 只有收入/支出算项目业务，内部转账与跨公司调拨不计笔数（R-03） */
+    if (t.type === 'out') { out += txBase(t, co); count++; }
+    else if (t.type === 'in') { inn += txBase(t, co); count++; }
   });
   return { out: round2(out), in: round2(inn), count };
 }
