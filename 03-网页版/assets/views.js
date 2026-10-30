@@ -1412,10 +1412,10 @@ function viewUsers() {
       <td class="num" style="color:var(--muted-2);font-size:12px">${u.lastLogin ? u.lastLogin.slice(0, 16).replace('T', ' ') : '从未登录'}</td>
       <td>
         <div class="row-actions">
-          <button class="icon-btn" title="编辑" data-action="edit-user" data-id="${u.id}">${icon('edit', 14)}</button>
-          <button class="icon-btn" title="重置密码" data-action="reset-pwd" data-id="${u.id}">${icon('lock', 14)}</button>
-          <button class="icon-btn danger" title="${u.id === SESSION.id ? '不能删除当前登录账号' : '删除'}"
-            data-action="del-user" data-id="${u.id}" ${u.id === SESSION.id ? 'disabled' : ''}>${icon('trash', 14)}</button>
+          <button class="icon-btn" title="编辑" data-action="edit-user" data-id="${u.id || ''}">${icon('edit', 14)}</button>
+          <button class="icon-btn" title="重置密码" data-action="reset-pwd" data-id="${u.id || ''}">${icon('lock', 14)}</button>
+          <button class="icon-btn danger" title="${u.id && u.id === SESSION.id ? '不能删除当前登录账号' : '删除'}"
+            data-action="del-user" data-id="${u.id || ''}" ${u.id && u.id === SESSION.id ? 'disabled' : ''}>${icon('trash', 14)}</button>
         </div>
       </td>
     </tr>`;

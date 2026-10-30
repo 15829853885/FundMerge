@@ -456,6 +456,10 @@ function normalize(raw) {
   d.meta.groupName = String(d.meta.groupName || '').trim();
   d.users = (Array.isArray(d.users) ? d.users : []).filter(u => u && typeof u === 'object');
   d.users.forEach(u => {
+    /* 补 id：导入账套 / 早期数据里的用户可能没有 id。缺 id 会让用户无法按 id 寻址
+       （用户列表渲染成 data-id="undefined"，编辑 / 重置密码 / 删除全部静默失败），
+       并让 SESSION.id 变成 undefined。与 normalizeCompany 的 c.id 兜底保持一致。 */
+    if (!u.id) u.id = uid('u');
     if (!Array.isArray(u.security)) u.security = [];
     if (!Array.isArray(u.companyIds)) u.companyIds = [];   // 空数组 = 全部公司（管理员）
   });

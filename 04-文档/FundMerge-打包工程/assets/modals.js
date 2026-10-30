@@ -898,8 +898,8 @@ function openUserModal(id) {
           <label class="field"><span class="lbl">角色</span>
             <select name="role">
               <option value="staff" ${u && u.role === 'staff' ? 'selected' : ''}>记账员</option>
-              <option value="admin" ${u && u.role === 'admin' ? 'selected' : ''}>管理员</option>
               <option value="viewer" ${u && u.role === 'viewer' ? 'selected' : ''}>查看员</option>
+              <option value="admin" ${u && u.role === 'admin' ? 'selected' : ''}>管理员</option>
             </select>
           </label>
           <div class="field">
@@ -933,16 +933,28 @@ function openUserModal(id) {
     const fd = new FormData(form);
     const displayName = String(fd.get('displayName') || '').trim();
     if (!displayName) return toast('请填写显示名称', 'err');
+    /* 角色白名单透传：原实现只认 admin，其余一律落成 staff，
+       会把「查看员」静默提升为可写角色（core.js canWrite = role !== 'viewer'），
+       等于管理员只是保存一次就把只读账号变成了可记账账号。 */
+    const roleRaw = String(fd.get('role') || '');
+    const role = ['admin', 'staff', 'viewer'].includes(roleRaw) ? roleRaw : 'staff';
 
     if (isEdit) {
       /* 审计：先记下变更前的角色与授权范围 */
       const beforeRole = u.role, beforeActive = u.active !== false;
       const beforeCos = (u.companyIds || []).slice();
+      const nextActive = fd.get('active') === 'on';
+      const nextCos = fd.getAll('companyIds').filter(Boolean);
+
+      /* 守卫必须先于赋值：原实现先改 u.role/u.active 再校验，return 时内存已被改，
+         之后任何一次 saveDB() 都会把「自我降权/停用」静默持久化（SESSION 是快照，界面看不出来）。 */
+      if (u.id === SESSION.id && nextActive === false) return toast('不能停用当前登录账号', 'err');
+      if (u.id === SESSION.id && role !== 'admin') return toast('不能取消自己的管理员权限', 'err');
 
       u.displayName = displayName;
-      u.role = fd.get('role') === 'admin' ? 'admin' : 'staff';
-      u.active = fd.get('active') === 'on';
-      u.companyIds = fd.getAll('companyIds').filter(Boolean);
+      u.role = role;
+      u.active = nextActive;
+      u.companyIds = nextCos;
 
       /* 审计：账号与权限变更必须留痕（安全要求，内控前提） */
       {
@@ -950,7 +962,7 @@ function openUserModal(id) {
           ? ids.map(id => (DB.companies.find(c => c.id === id) || {}).name || id).join('、')
           : '全部公司';
         const diffs = [];
-        if (beforeRole !== u.role) diffs.push('角色 ' + beforeRole + ' → ' + u.role);
+        if (beforeRole !== u.role) diffs.push('角色 ' + roleLabel(beforeRole) + ' → ' + roleLabel(u.role));
         if (beforeActive !== (u.active !== false)) diffs.push('状态 ' + (beforeActive ? '启用' : '停用') + ' → ' + (u.active !== false ? '启用' : '停用'));
         if (beforeCos.slice().sort().join() !== (u.companyIds || []).slice().sort().join()) {
           diffs.push('授权公司 ' + coNames(beforeCos) + ' → ' + coNames(u.companyIds));
@@ -963,10 +975,8 @@ function openUserModal(id) {
           });
         }
       }
-      if (u.id === SESSION.id && u.active === false) return toast('不能停用当前登录账号', 'err');
-      if (u.id === SESSION.id && u.role !== 'admin') return toast('不能取消自己的管理员权限', 'err');
       saveDB(); closeModal(); render();
-      toast('用户已更新', 'ok');
+      toast(beforeRole !== u.role ? `用户已更新，角色已改为「${roleLabel(u.role)}」` : '用户已更新', 'ok');
       return;
     }
 
@@ -980,7 +990,7 @@ function openUserModal(id) {
       username,
       displayName,
       password,
-      role: fd.get('role') === 'admin' ? 'admin' : 'staff'
+      role
     });
     user.companyIds = fd.getAll('companyIds').filter(Boolean);
     user.active = fd.get('active') === 'on';

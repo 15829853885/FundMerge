@@ -357,6 +357,12 @@ select {
   background-position: right 9px center;
 }
 
+/* 必填下拉未选择时用占位色：select 没有 placeholder 概念，`<option value="">请选择…</option>`
+   的收起态默认用全强度 --ink 渲染，看起来像个已经选好的值。
+   只有声明了 required 且值仍为空的 select 会命中 :invalid，未加 required 的下拉不受影响。 */
+select:invalid { color: var(--ink-4); }
+select:invalid option { color: var(--ink); }
+
 input[type=number]::-webkit-outer-spin-button,
 input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 input[type=number] { -moz-appearance: textfield; appearance: textfield; }
@@ -1055,8 +1061,13 @@ tr:hover .row-actions { opacity: 1; }
 .auth-form h2 { font-size: 21px; font-weight: 650; letter-spacing: -.02em; }
 .auth-form .lead { margin-top: 7px; font-size: 12.5px; color: var(--muted); line-height: 1.7; }
 .auth-form form { margin-top: 26px; display: flex; flex-direction: column; gap: 14px; }
-.auth-form .field > label { font-size: 12px; }
-.auth-form input { height: 40px; border-radius: 9px; }
+.auth-form .field > label, .auth-form .field > .lbl { font-size: 12px; }
+/* 注意特异性：全局规则写的是 input:not([type=checkbox]):not([type=radio])，算 (0,2,1)，
+   而 .auth-form input 只有 (0,1,1)，压不住它 —— 原来这条 height:40px 其实一直没生效，
+   登录/注册页的输入框实际是 34px，只有按钮到了 40px。这里沿用同样的 :not 链补回来。 */
+.auth-form input:not([type=checkbox]):not([type=radio]),
+.auth-form select,
+.auth-form textarea { height: 40px; border-radius: 9px; }
 .auth-form .btn { height: 40px; border-radius: 9px; margin-top: 4px; }
 .auth-err {
   display: none; align-items: center; gap: 7px;

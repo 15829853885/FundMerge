@@ -252,7 +252,16 @@ function applyViewerReadOnly(scope) {
   if (!isViewer()) return;
   const s = scope || document;
   s.querySelectorAll('[data-action]').forEach(el => {
-    if (WRITE_ACTIONS.has(el.dataset.action)) el.style.display = 'none';
+    if (!WRITE_ACTIONS.has(el.dataset.action)) return;
+    /* 禁用而非隐藏：让查看员看到「这里有功能但你没权限」，比凭空消失更易理解权限边界 */
+    el.setAttribute('aria-disabled', 'true');
+    el.title = '查看员为只读权限';
+    if (el.tagName === 'BUTTON' || el.tagName === 'INPUT') {
+      el.disabled = true;
+    } else {
+      el.style.opacity = '.45';
+      el.style.cursor = 'not-allowed';
+    }
   });
   s.querySelectorAll('[data-budget-cat]').forEach(el => {
     el.readOnly = true;
@@ -447,10 +456,32 @@ function authBrandHTML() {
   </div>`;
 }
 
+/* 登录身份下拉：按账号记住上次选择（只接受 staff / viewer / admin，非法值回退 staff）。
+   用「账号隔离」的键，避免共用一台机器时 B 登录看到 A 上次选的身份（隐私 + 少一次误选）。 */
+const LOGIN_ROLE_PREFIX = 'fm-login-role:';
+const LOGIN_ROLES = ['staff', 'viewer', 'admin'];
+const loginRoleKey = username => LOGIN_ROLE_PREFIX + String(username || '').trim().toLowerCase();
+const getSavedLoginRole = username => {
+  let v = '';
+  try { v = localStorage.getItem(loginRoleKey(username)) || ''; } catch (e) { v = ''; }
+  return LOGIN_ROLES.includes(v) ? v : 'staff';
+};
+const saveLoginRole = (username, r) => {
+  if (!LOGIN_ROLES.includes(r)) return;
+  try { localStorage.setItem(loginRoleKey(username), r); } catch (e) { /* 隐私模式等场景静默忽略 */ }
+};
+/* 原始值探测：区分「没存过」与「存了但非法」，供首登预置真实身份用 */
+const rawLoginRole = username => {
+  try { return localStorage.getItem(loginRoleKey(username)) || ''; } catch (e) { return ''; }
+};
+
 function renderAuth(mode) {
   SESSION = null;
   document.body.style.overflow = '';
-  const remembered = localStorage.getItem('fund-ledger-user') || '';
+  /* localStorage 在受限存储/隐私模式下可能直接抛异常，未捕获会让整个登录页白屏 */
+  let remembered = '';
+  try { remembered = localStorage.getItem('fund-ledger-user') || ''; } catch (e) { remembered = ''; }
+  const savedRole = getSavedLoginRole(remembered);
   const root = $('#root');
   if (window.Scene3D) Scene3D.dispose();
 
@@ -475,12 +506,12 @@ function renderAuth(mode) {
           <h2>初始化系统</h2>
           <p class="lead">第一次使用，请创建管理员账号。账号仅保存在本机，用于区分操作人与权限。</p>
           <form id="setup-form">
-            <div class="auth-err" id="auth-err">${icon('alert', 14)}<span></span></div>
-            <label class="field"><label>公司名称</label><input type="text" name="company" placeholder="如：Accra Trading Ltd" value="${esc(DB.companies[0] ? DB.companies[0].name : '我的公司')}" required></label>
-            <label class="field"><label>管理员账号</label><input type="text" name="username" placeholder="3-20 位字母或数字" required autofocus></label>
-            <label class="field"><label>显示名称</label><input type="text" name="displayName" placeholder="你的姓名" required></label>
-            <label class="field"><label>登录密码</label><input type="password" name="password" placeholder="至少 6 位" required></label>
-            <label class="field"><label>确认密码</label><input type="password" name="password2" placeholder="再次输入" required></label>
+            <div class="auth-err" id="auth-err" role="alert">${icon('alert', 14)}<span></span></div>
+            <label class="field"><span class="lbl">公司名称</span><input type="text" name="company" placeholder="如：Accra Trading Ltd" value="${esc(DB.companies[0] ? DB.companies[0].name : '我的公司')}" required></label>
+            <label class="field"><span class="lbl">管理员账号</span><input type="text" name="username" placeholder="3-20 位字母或数字" required autofocus></label>
+            <label class="field"><span class="lbl">显示名称</span><input type="text" name="displayName" placeholder="你的姓名" required></label>
+            <label class="field"><span class="lbl">登录密码</span><input type="password" name="password" placeholder="至少 6 位" required></label>
+            <label class="field"><span class="lbl">确认密码</span><input type="password" name="password2" placeholder="再次输入" required></label>
             <button class="btn primary block" type="submit">创建并进入</button>
           </form>
           <div class="auth-version">${icon('lock', 12)} 密码使用 PBKDF2-SHA256 加盐哈希存储</div>
@@ -492,17 +523,15 @@ function renderAuth(mode) {
     $('#setup-form').addEventListener('submit', async e => {
       e.preventDefault();
       const fd = new FormData(e.target);
-      const err = $('#auth-err');
-      const showErr = m => { err.classList.add('show'); err.querySelector('span').textContent = m; };
       const username = String(fd.get('username') || '').trim();
       const password = String(fd.get('password') || '');
       const company = String(fd.get('company') || '').trim() || '我的公司';
       const displayName = String(fd.get('displayName') || '').trim() || username;
 
-      if (!/^[a-zA-Z0-9_.-]{3,20}$/.test(username)) return showErr('账号需为 3-20 位字母、数字或 _ . -');
-      if (password.length < 6) return showErr('密码至少 6 位');
-      if (password !== fd.get('password2')) return showErr('两次输入的密码不一致');
-      if (!window.crypto || !crypto.subtle) return showErr('当前环境不支持安全加密，请使用桌面版');
+      if (!/^[a-zA-Z0-9_.-]{3,20}$/.test(username)) return showAuthErr('账号需为 3-20 位字母、数字或 _ . -', 'username');
+      if (password.length < 6) return showAuthErr('密码至少 6 位', 'password');
+      if (password !== fd.get('password2')) return showAuthErr('两次输入的密码不一致', 'password2');
+      if (!window.crypto || !crypto.subtle) return showAuthErr('当前环境不支持安全加密，请使用桌面版');
 
       const btn = e.target.querySelector('button[type=submit]');
       btn.disabled = true; btn.textContent = '正在创建…';
@@ -525,20 +554,19 @@ function renderAuth(mode) {
         <h2>登录</h2>
         <p class="lead">${esc(DB.meta.groupName || (DB.companies.length > 1 ? `${DB.companies.length} 家公司` : DB.companies[0].name))} · 合资金账</p>
         <form id="login-form">
-          <div class="auth-err" id="auth-err">${icon('alert', 14)}<span></span></div>
-          <label class="field"><label>账号</label><input type="text" name="username" id="login-user" value="${esc(remembered)}" placeholder="请输入账号" required ${remembered ? '' : 'autofocus'}></label>
-          <label class="field"><label>登录公司</label>
-            <select name="companyId" id="login-company"><option value="">输入账号后选择公司</option></select>
+          <div class="auth-err" id="auth-err" role="alert">${icon('alert', 14)}<span></span></div>
+          <label class="field"><span class="lbl">账号</span><input type="text" name="username" id="login-user" value="${esc(remembered)}" placeholder="请输入账号" required ${remembered ? '' : 'autofocus'}></label>
+          <label class="field"><span class="lbl">登录公司</span>
+            <select name="companyId" id="login-company" disabled><option value="">输入账号后选择公司</option></select>
           </label>
-          <label class="field"><label>登录身份</label>
-            <div class="seg" style="width:auto" id="login-role-seg">
-              <button type="button" class="seg-btn is-active" data-login-role="staff">记账员</button>
-              <button type="button" class="seg-btn" data-login-role="admin">管理员</button>
-              <button type="button" class="seg-btn" data-login-role="viewer">查看员</button>
-            </div>
-            <input type="hidden" name="role" id="login-role" value="staff">
+          <label class="field"><span class="lbl">登录身份</span>
+            <select name="role" id="login-role">
+              <option value="staff"${savedRole === 'staff' ? ' selected' : ''}>记账员</option>
+              <option value="viewer"${savedRole === 'viewer' ? ' selected' : ''}>查看员</option>
+              <option value="admin"${savedRole === 'admin' ? ' selected' : ''}>管理员</option>
+            </select>
           </label>
-          <label class="field"><label>密码</label><input type="password" name="password" id="login-pwd" placeholder="请输入密码" required ${remembered ? 'autofocus' : ''}></label>
+          <label class="field"><span class="lbl">密码</span><input type="password" name="password" id="login-pwd" placeholder="请输入密码" required ${remembered ? 'autofocus' : ''}></label>
           <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
             <label class="switch"><input type="checkbox" name="remember" ${remembered ? 'checked' : ''}><span class="track"></span><span>记住账号</span></label>
             <label class="switch"><input type="checkbox" name="rememberPwd" ${hasRemember() ? 'checked' : ''}><span class="track"></span><span>记住密码</span></label>
@@ -560,16 +588,15 @@ function renderAuth(mode) {
   </div>`;
 
   if (window.Scene3D) Scene3D.mount(root);
-  /* 登录身份选择：点按钮切换激活态并写入隐藏字段 */
-  const roleSeg = $('#login-role-seg');
-  if (roleSeg) {
-    roleSeg.addEventListener('click', e => {
-      const b = e.target.closest('[data-login-role]');
-      if (!b) return;
-      roleSeg.querySelectorAll('.seg-btn').forEach(x => x.classList.remove('is-active'));
-      b.classList.add('is-active');
-      const hidden = $('#login-role');
-      if (hidden) hidden.value = b.dataset.loginRole;
+  /* 登录身份选择：切换下拉即按账号记住，下次登录自动回填 */
+  const roleSelect = $('#login-role');
+  let roleTouched = false;   /* 用户手动改过身份后，不再因输入账号而自动切换 */
+  let lastUser = '';         /* 已预置过身份的账号标识（id 或 username），只有识别出的账号真的换了才重置 */
+  if (roleSelect) {
+    roleSelect.addEventListener('change', () => {
+      roleTouched = true;
+      const uname = ($('#login-user').value || '').trim();
+      if (uname) saveLoginRole(uname, roleSelect.value);   /* 账号为空时不写，避免生成 ":xxx" 脏键 */
     });
   }
   const fillCompanies = () => {
@@ -577,7 +604,21 @@ function renderAuth(mode) {
     const nameInput = $('#login-user');
     if (!box || !nameInput) return;
     const u = findUserByName(nameInput.value);
-    if (!u) { box.innerHTML = '<option value="">输入账号后选择公司</option>'; return; }
+    /* 账号未识别前禁用，避免留下一个只有占位项的 Tab 停靠点 */
+    if (!u) { box.innerHTML = '<option value="">输入账号后选择公司</option>'; box.disabled = true; return; }
+    /* 只有「已识别的账号」真的换了，才丢弃用户的手动选择（不能按输入字符判断，
+       否则打字过程中每敲一个字母都会被判成「换了账号」，把手选身份冲掉）。 */
+    /* 用 id || username 兜底：normalizeDB 不给用户补 id（core.js:458），导入账套的历史用户可能没有 id，
+       只用 id 会让复位静默失效。findUserByName 是全等匹配，半截用户名不会走到这里。 */
+    const who = u.id || u.username.toLowerCase();
+    if (lastUser && who !== lastUser) roleTouched = false;
+    lastUser = who;
+    /* 预置身份：有存档用存档；没存过或存档非法，则预置该账号真实角色，省掉一次「再点一次登录」 */
+    if (roleSelect && !roleTouched) {
+      const saved = rawLoginRole(nameInput.value);
+      const fallback = LOGIN_ROLES.includes(u.role) ? u.role : 'staff';
+      roleSelect.value = LOGIN_ROLES.includes(saved) ? saved : fallback;
+    }
     let list = DB.companies;
     if (u.role !== 'admin' && Array.isArray(u.companyIds) && u.companyIds.length) {
       list = DB.companies.filter(c => u.companyIds.includes(c.id));
@@ -587,6 +628,7 @@ function renderAuth(mode) {
     box.innerHTML = list.map(c =>
       '<option value="' + c.id + '"' + (c.id === cur ? ' selected' : '') + '>' + esc(c.name) + (c.isParent ? ' · 集团总公司' : '') + '</option>'
     ).join('');
+    box.disabled = false;
   };
   const userBox = $('#login-user');
   if (userBox) {
@@ -604,9 +646,8 @@ function renderAuth(mode) {
   $('#login-form').addEventListener('submit', async e => {
     e.preventDefault();
     const fd = new FormData(e.target);
-    const err = $('#auth-err');
     const btn = e.target.querySelector('button[type=submit]');
-    err.classList.remove('show');
+    clearAuthErr();
     btn.disabled = true;
     const old = btn.textContent;
     btn.textContent = '验证中…';
@@ -614,21 +655,29 @@ function renderAuth(mode) {
     try {
       const r = await verifyLogin(fd.get('username'), fd.get('password'));
       if (!r.ok) {
-        err.classList.add('show');
-        err.querySelector('span').textContent = r.error;
+        /* 按 verifyLogin 的文案把焦点放到最可能需要改的字段（账号类问题 → 账号框，密码 → 密码框） */
+        const field = r.error.indexOf('账号') >= 0 ? 'username' : (r.error.indexOf('密码') >= 0 ? 'password' : '');
+        showAuthErr(r.error, field);
         btn.disabled = false; btn.textContent = old;
         return;
       }
       /* 身份校验：所选身份必须与该账号实际角色一致，避免「选了管理员实际是记账员」绕过 */
       const wantRole = String(fd.get('role') || 'staff');
       if (r.user.role !== wantRole) {
-        err.classList.add('show');
-        err.querySelector('span').textContent = `该账号是「${roleLabel(r.user.role)}」，请选择正确的身份后重试`;
+        /* 不匹配时直接把下拉切到正确值并说明，避免用户误以为密码错了
+           （这条错误是在密码校验通过后才出的）。
+           仍然要求再点一次「登录」，保留用户对身份的显式确认，不静默放行。 */
+        const sel = $('#login-role');
+        if (sel && LOGIN_ROLES.includes(r.user.role)) sel.value = r.user.role;
+        showAuthErr(`该账号是「${roleLabel(r.user.role)}」，已为你切换身份，请再次点击「登 录」`, 'role');
         btn.disabled = false; btn.textContent = old;
         return;
       }
-      if (fd.get('remember') === 'on') localStorage.setItem('fund-ledger-user', r.user.username);
-      else localStorage.removeItem('fund-ledger-user');
+      try {
+        if (fd.get('remember') === 'on') localStorage.setItem('fund-ledger-user', r.user.username);
+        else localStorage.removeItem('fund-ledger-user');
+      } catch (e) { /* 受限存储：记住账号失败不该阻断登录 */ }
+      saveLoginRole(r.user.username, wantRole);
       if (fd.get('rememberPwd') === 'on') await saveRemember(r.user.username, String(fd.get('password') || ''));
       else localStorage.removeItem(REMEMBER_KEY);
       startSession(r.user);
@@ -650,8 +699,7 @@ function renderAuth(mode) {
       renderShell();
       toast(`欢迎回来，${r.user.displayName}`, 'ok');
     } catch (ex) {
-      err.classList.add('show');
-      err.querySelector('span').textContent = '登录失败：' + ex.message;
+      showAuthErr('登录失败：' + ex.message);
       btn.disabled = false; btn.textContent = old;
     }
   });
@@ -663,13 +711,54 @@ function authShell(inner) {
   return `<div class="auth">${authBrandHTML()}<div class="auth-panel">${inner}</div></div>`;
 }
 function authErrHTML() {
-  return `<div class="auth-err" id="auth-err">${icon('alert', 14)}<span></span></div>`;
+  return `<div class="auth-err" id="auth-err" role="alert">${icon('alert', 14)}<span></span></div>`;
 }
-function showAuthErr(msg) {
+/* 认证表单出错时的统一反馈。
+   错误条是 form 的第一个子元素，注册页字段多，用户视线在底部按钮上时它常落在视口外，
+   表现就是「点了注册没反应」；这里补上滚动 + 焦点落到出错字段。
+   错误态样式复用 styles.css 388 的 .field.is-invalid（连焦点环跟随错误色都写好了）。 */
+function clearAuthErr() {
   const el = $('#auth-err');
   if (!el) return;
+  el.classList.remove('show');
+  const span = el.querySelector('span');
+  if (span) span.textContent = '';
+  const form = el.closest('form');
+  if (form) form.querySelectorAll('.field.is-invalid').forEach(f => f.classList.remove('is-invalid'));
+}
+function showAuthErr(msg, fieldName) {
+  const el = $('#auth-err');
+  if (!el) return;
+  const form = el.closest('form');
+  if (form) form.querySelectorAll('.field.is-invalid').forEach(f => f.classList.remove('is-invalid'));
+  /* 先显示容器、再在下一帧写文案：role="alert" 首次插入 DOM 时更可靠地触发读屏播报；
+     同时保留同步写入，保证立刻可读/可测。 */
+  const span = el.querySelector('span');
   el.classList.add('show');
-  el.querySelector('span').textContent = msg;
+  if (span) { span.textContent = msg; requestAnimationFrame(() => { span.textContent = msg; }); }
+  let target = null;
+  if (fieldName && form) {
+    target = form.querySelector('[name="' + fieldName + '"]');
+    const box = target && target.closest('.field');
+    if (box) {
+      box.classList.add('is-invalid');
+      /* 用户一动这个字段就撤掉红框，否则改好了红框还留着，像还没改对；
+         全部红框都撤完时把顶部提示条一起收掉，避免残留过期的报错 */
+      const off = () => {
+        box.classList.remove('is-invalid');
+        target.removeEventListener('input', off);
+        target.removeEventListener('change', off);
+        if (form && !form.querySelector('.field.is-invalid')) clearAuthErr();
+      };
+      target.addEventListener('input', off);
+      target.addEventListener('change', off);
+    }
+  }
+  try { el.scrollIntoView({ block: 'nearest' }); } catch (e) { /* 老内核忽略 */ }
+  if (target) {
+    /* preventScroll：上面已经把错误条滚进视口，避免 focus 再滚一次把提示顶出去 */
+    try { target.focus({ preventScroll: true }); } catch (e) { try { target.focus(); } catch (e2) { /* 忽略 */ } }
+  }
 }
 const questionOptions = (sel, idx) => SECURITY_QUESTIONS
   .map((q, i) => `<option value="${esc(q)}" ${i === idx ? 'selected' : ''}>${esc(q)}</option>`).join('');
@@ -677,21 +766,29 @@ const questionOptions = (sel, idx) => SECURITY_QUESTIONS
 function renderAuthRegister() {
   $('#root').innerHTML = authShell(`<div class="auth-form wide-form">
     <h2>注册账号</h2>
-    <p class="lead">注册后即可记录与查看公司资金。自助注册的账号默认为「记账员」权限。</p>
+    <p class="lead">注册后即可记录与查看公司资金。自助注册可选择「记账员」或「查看员」；管理员由管理员在用户管理中创建。</p>
     <form id="reg-form">
       ${authErrHTML()}
       <div class="form-grid" style="gap:12px">
-        <label class="field"><label>登录账号</label><input type="text" name="username" placeholder="3-20 位字母或数字" required></label>
-        <label class="field"><label>显示名称</label><input type="text" name="displayName" placeholder="你的姓名" required></label>
-        <label class="field"><label>登录密码</label><input type="password" name="password" placeholder="至少 6 位" required></label>
-        <label class="field"><label>确认密码</label><input type="password" name="password2" placeholder="再次输入" required></label>
+        <label class="field"><span class="lbl">登录账号</span><input type="text" name="username" placeholder="3-20 位字母或数字" required></label>
+        <label class="field"><span class="lbl">显示名称</span><input type="text" name="displayName" placeholder="你的姓名" required></label>
+        <label class="field"><span class="lbl">登录密码</span><input type="password" name="password" placeholder="至少 6 位" required></label>
+        <label class="field"><span class="lbl">确认密码</span><input type="password" name="password2" placeholder="再次输入" required></label>
+        <label class="field span-2"><span class="lbl">注册用户类型</span>
+          <select name="role" id="reg-role" required aria-describedby="reg-role-hint">
+            <option value="">请选择用户类型</option>
+            <option value="staff">记账员</option>
+            <option value="viewer">查看员</option>
+          </select>
+          <span class="hint" id="reg-role-hint">记账员可记账；查看员仅可查看与导出。注册后类型只能由管理员修改。</span>
+        </label>
       </div>
       <div class="auth-sep">预留信息 · 忘记密码时用来验证身份</div>
       <div class="form-grid" style="gap:12px">
-        <label class="field"><label>问题一</label><select name="q1">${questionOptions(null, 0)}</select></label>
-        <label class="field"><label>答案一</label><input type="text" name="a1" placeholder="不区分大小写" required></label>
-        <label class="field"><label>问题二</label><select name="q2">${questionOptions(null, 2)}</select></label>
-        <label class="field"><label>答案二</label><input type="text" name="a2" placeholder="不区分大小写" required></label>
+        <label class="field"><span class="lbl">问题一</span><select name="q1">${questionOptions(null, 0)}</select></label>
+        <label class="field"><span class="lbl">答案一</span><input type="text" name="a1" placeholder="不区分大小写" required></label>
+        <label class="field"><span class="lbl">问题二</span><select name="q2">${questionOptions(null, 2)}</select></label>
+        <label class="field"><span class="lbl">答案二</span><input type="text" name="a2" placeholder="不区分大小写" required></label>
       </div>
       <button class="btn primary block" type="submit">注册并登录</button>
       <div class="auth-links"><button type="button" data-auth="login">已有账号？返回登录</button></div>
@@ -699,26 +796,44 @@ function renderAuthRegister() {
   </div>`);
   if (window.Scene3D) Scene3D.mount($('#root'));
 
+  /* 原生校验只给一句「请选择一个项目」，这里补上更准确的措辞。
+     只在它自己是第一个出错控件时才抢答，避免和账号/密码的原生提示打架。 */
+  const regRole = $('#reg-role');
+  if (regRole) {
+    regRole.addEventListener('invalid', () => {
+      const form = $('#reg-form');
+      const first = form && form.querySelector(':invalid');
+      if (first && first !== regRole) return;
+      showAuthErr('请选择注册用户类型（记账员或查看员）', 'role');
+    });
+  }
+
   $('#reg-form').addEventListener('submit', async e => {
     e.preventDefault();
     const fd = new FormData(e.target);
+    clearAuthErr();
     const username = String(fd.get('username') || '').trim();
     const displayName = String(fd.get('displayName') || '').trim();
     const password = String(fd.get('password') || '');
     const a1 = String(fd.get('a1') || '').trim();
     const a2 = String(fd.get('a2') || '').trim();
+    const role = String(fd.get('role') || '');
 
-    if (!/^[a-zA-Z0-9_.-]{3,20}$/.test(username)) return showAuthErr('账号需为 3-20 位字母、数字或 _ . -');
-    if (findUserByName(username)) return showAuthErr('该账号已被注册，请换一个');
-    if (password.length < 6) return showAuthErr('密码至少 6 位');
-    if (password !== fd.get('password2')) return showAuthErr('两次输入的密码不一致');
-    if (!a1 || !a2) return showAuthErr('请填写两个预留问题的答案');
+    /* 校验顺序与视觉顺序一致（账号 → 密码 → 类型 → 预留信息），
+       否则同时漏填类型和答案时要两轮往返才能全部改完 */
+    if (!/^[a-zA-Z0-9_.-]{3,20}$/.test(username)) return showAuthErr('账号需为 3-20 位字母、数字或 _ . -', 'username');
+    if (findUserByName(username)) return showAuthErr('该账号已被注册，请换一个', 'username');
+    if (password.length < 6) return showAuthErr('密码至少 6 位', 'password');
+    if (password !== fd.get('password2')) return showAuthErr('两次输入的密码不一致', 'password2');
+    /* 自助注册只允许记账员 / 查看员，管理员由管理员在用户管理中创建 */
+    if (role !== 'staff' && role !== 'viewer') return showAuthErr('请选择注册用户类型（记账员或查看员）', 'role');
+    if (!a1 || !a2) return showAuthErr('请填写两个预留问题的答案', a1 ? 'a2' : 'a1');
     if (!window.crypto || !crypto.subtle) return showAuthErr('当前环境不支持安全加密');
 
     const btn = e.target.querySelector('button[type=submit]');
     btn.disabled = true; btn.textContent = '注册中…';
     try {
-      const user = await createUser({ username, displayName: displayName || username, password, role: 'staff' });
+      const user = await createUser({ username, displayName: displayName || username, password, role });
       await setSecurity(user, [{ q: fd.get('q1'), a: a1 }, { q: fd.get('q2'), a: a2 }]);
       saveDB();
       startSession(user);
@@ -746,16 +861,16 @@ function renderAuthForgot() {
 function forgotStep1() {
   $('#forgot-body').innerHTML = `<form id="f1">
     ${authErrHTML()}
-    <label class="field"><label>登录账号</label><input type="text" name="username" placeholder="请输入账号" required autofocus></label>
+    <label class="field"><span class="lbl">登录账号</span><input type="text" name="username" placeholder="请输入账号" required autofocus></label>
     <button class="btn primary block" type="submit">下一步</button>
   </form>`;
   $('#f1').addEventListener('submit', e => {
     e.preventDefault();
     const name = String(new FormData(e.target).get('username') || '').trim();
     const u = findUserByName(name);
-    if (!u) return showAuthErr('账号不存在');
-    if (u.active === false) return showAuthErr('该账号已被停用，请联系管理员');
-    if (!u.security || !u.security.length) return showAuthErr('该账号没有设置预留信息，请联系管理员重置密码');
+    if (!u) return showAuthErr('账号不存在', 'username');
+    if (u.active === false) return showAuthErr('该账号已被停用，请联系管理员', 'username');
+    if (!u.security || !u.security.length) return showAuthErr('该账号没有设置预留信息，请联系管理员重置密码', 'username');
     forgotStep2(u);
   });
 }
@@ -764,7 +879,7 @@ function forgotStep2(u) {
   $('#forgot-body').innerHTML = `<form id="f2">
     ${authErrHTML()}
     <p class="lead" style="margin-bottom:4px">账号 <b>${esc(u.username)}</b>，请回答预留问题</p>
-    ${u.security.map((s, i) => `<label class="field"><label>${esc(s.q)}</label><input type="text" name="a${i}" placeholder="答案" required></label>`).join('')}
+    ${u.security.map((s, i) => `<label class="field"><span class="lbl">${esc(s.q)}</span><input type="text" name="a${i}" placeholder="答案" required></label>`).join('')}
     <button class="btn primary block" type="submit">验证身份</button>
   </form>`;
   $('#f2').addEventListener('submit', async e => {
@@ -772,7 +887,7 @@ function forgotStep2(u) {
     const fd = new FormData(e.target);
     const answers = u.security.map((s, i) => String(fd.get('a' + i) || ''));
     const v = await verifySecurity(u, answers);
-    if (!v.ok) return showAuthErr(v.error || '验证失败');
+    if (!v.ok) return showAuthErr(v.error || '验证失败', 'a0');
     forgotStep3(u, answers);
   });
 }
@@ -781,16 +896,16 @@ function forgotStep3(u, answers) {
   $('#forgot-body').innerHTML = `<form id="f3">
     ${authErrHTML()}
     <p class="lead" style="margin-bottom:4px">身份验证通过，请设置新密码</p>
-    <label class="field"><label>新密码</label><input type="password" name="p1" placeholder="至少 6 位" required></label>
-    <label class="field"><label>确认新密码</label><input type="password" name="p2" placeholder="再次输入" required></label>
+    <label class="field"><span class="lbl">新密码</span><input type="password" name="p1" placeholder="至少 6 位" required></label>
+    <label class="field"><span class="lbl">确认新密码</span><input type="password" name="p2" placeholder="再次输入" required></label>
     <button class="btn primary block" type="submit">重置密码</button>
   </form>`;
   $('#f3').addEventListener('submit', async e => {
     e.preventDefault();
     const fd = new FormData(e.target);
     const p1 = String(fd.get('p1') || '');
-    if (p1.length < 6) return showAuthErr('密码至少 6 位');
-    if (p1 !== fd.get('p2')) return showAuthErr('两次输入的密码不一致');
+    if (p1.length < 6) return showAuthErr('密码至少 6 位', 'p1');
+    if (p1 !== fd.get('p2')) return showAuthErr('两次输入的密码不一致', 'p2');
     const btn = e.target.querySelector('button[type=submit]');
     btn.disabled = true; btn.textContent = '提交中…';
     const r = await resetPasswordBySecurity(u.username, answers, p1);
@@ -1020,7 +1135,8 @@ function clearRemember() {
   toast('已清除记住的账号密码', 'ok');
   renderAuth('login');
 }
-const hasRemember = () => !!localStorage.getItem(REMEMBER_KEY);
+/* 渲染期就会调用（登录页的「记住密码」勾选态），受限存储下不能让整个页面白屏 */
+const hasRemember = () => { try { return !!localStorage.getItem(REMEMBER_KEY); } catch (e) { return false; } };
 
 /* -------------------------------- 用户菜单 -------------------------------- */
 
@@ -2454,7 +2570,7 @@ function firstRunHTML(u) {
         </div>
 
         <form id="firstrun-form">
-          <div class="auth-err" id="auth-err">${icon('alert', 14)}<span></span></div>
+          <div class="auth-err" id="auth-err" role="alert">${icon('alert', 14)}<span></span></div>
 
           <div class="fr-block">
             <div class="fr-block-hd"><b>管理员账号</b><span>登录时使用，可用手机号或易记账号</span></div>
