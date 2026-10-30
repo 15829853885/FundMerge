@@ -899,6 +899,7 @@ function openUserModal(id) {
             <select name="role">
               <option value="staff" ${u && u.role === 'staff' ? 'selected' : ''}>记账员</option>
               <option value="admin" ${u && u.role === 'admin' ? 'selected' : ''}>管理员</option>
+              <option value="viewer" ${u && u.role === 'viewer' ? 'selected' : ''}>查看员</option>
             </select>
           </label>
           <div class="field">
@@ -907,7 +908,7 @@ function openUserModal(id) {
           </div>
           ${!isEdit ? `<label class="field span-2"><span class="lbl">初始密码</span><input type="password" name="password" placeholder="至少 6 位" required></label>` : ''}
           <div class="field span-2">
-            <span class="lbl">可操作公司<span style="color:var(--muted-2);font-weight:400">（管理员不受限；记账员不勾选则默认可全部）</span></span>
+            <span class="lbl">可操作公司<span style="color:var(--muted-2);font-weight:400">（管理员不受限；记账员/查看员不勾选则默认可全部）</span></span>
             <div class="chk-list">
               ${DB.companies.map(co => `<label class="chk-item">
                 <input type="checkbox" name="companyIds" value="${co.id}"

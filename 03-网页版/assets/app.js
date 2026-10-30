@@ -247,6 +247,19 @@ function autoPageTables(root) {
   });
 }
 
+/* 查看员只读：隐藏写操作按钮 + 禁用预算金额输入，与点击/change 委托守卫一致（双保险） */
+function applyViewerReadOnly(scope) {
+  if (!isViewer()) return;
+  const s = scope || document;
+  s.querySelectorAll('[data-action]').forEach(el => {
+    if (WRITE_ACTIONS.has(el.dataset.action)) el.style.display = 'none';
+  });
+  s.querySelectorAll('[data-budget-cat]').forEach(el => {
+    el.readOnly = true;
+    el.title = '查看员为只读权限';
+  });
+}
+
 function renderView() {
   if (!SESSION) return;
   if (!can('view')) return;
@@ -345,6 +358,7 @@ function renderView() {
   applySidebar();
   enhanceA11y(document);
   autoPageTables(root);
+  applyViewerReadOnly(document);
 
   animateView(root);
   runCounters(root);
@@ -516,6 +530,14 @@ function renderAuth(mode) {
           <label class="field"><label>登录公司</label>
             <select name="companyId" id="login-company"><option value="">输入账号后选择公司</option></select>
           </label>
+          <label class="field"><label>登录身份</label>
+            <div class="seg" style="width:auto" id="login-role-seg">
+              <button type="button" class="seg-btn is-active" data-login-role="staff">记账员</button>
+              <button type="button" class="seg-btn" data-login-role="admin">管理员</button>
+              <button type="button" class="seg-btn" data-login-role="viewer">查看员</button>
+            </div>
+            <input type="hidden" name="role" id="login-role" value="staff">
+          </label>
           <label class="field"><label>密码</label><input type="password" name="password" id="login-pwd" placeholder="请输入密码" required ${remembered ? 'autofocus' : ''}></label>
           <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
             <label class="switch"><input type="checkbox" name="remember" ${remembered ? 'checked' : ''}><span class="track"></span><span>记住账号</span></label>
@@ -538,6 +560,18 @@ function renderAuth(mode) {
   </div>`;
 
   if (window.Scene3D) Scene3D.mount(root);
+  /* 登录身份选择：点按钮切换激活态并写入隐藏字段 */
+  const roleSeg = $('#login-role-seg');
+  if (roleSeg) {
+    roleSeg.addEventListener('click', e => {
+      const b = e.target.closest('[data-login-role]');
+      if (!b) return;
+      roleSeg.querySelectorAll('.seg-btn').forEach(x => x.classList.remove('is-active'));
+      b.classList.add('is-active');
+      const hidden = $('#login-role');
+      if (hidden) hidden.value = b.dataset.loginRole;
+    });
+  }
   const fillCompanies = () => {
     const box = $('#login-company');
     const nameInput = $('#login-user');
@@ -582,6 +616,14 @@ function renderAuth(mode) {
       if (!r.ok) {
         err.classList.add('show');
         err.querySelector('span').textContent = r.error;
+        btn.disabled = false; btn.textContent = old;
+        return;
+      }
+      /* 身份校验：所选身份必须与该账号实际角色一致，避免「选了管理员实际是记账员」绕过 */
+      const wantRole = String(fd.get('role') || 'staff');
+      if (r.user.role !== wantRole) {
+        err.classList.add('show');
+        err.querySelector('span').textContent = `该账号是「${roleLabel(r.user.role)}」，请选择正确的身份后重试`;
         btn.disabled = false; btn.textContent = old;
         return;
       }
@@ -1127,6 +1169,11 @@ document.addEventListener('click', async e => {
   if (!el || el.disabled) return;
   const action = el.dataset.action;
   const id = el.dataset.id;
+
+  /* 查看员只读：拦截写操作（前端兜底，后端 isAdmin/adminGuard 仍各自生效） */
+  if (isViewer() && WRITE_ACTIONS.has(action)) {
+    return toast('查看员为只读权限，不能进行此操作', 'err');
+  }
 
   switch (action) {
     case 'nav': navigate(el.dataset.view); break;
@@ -2201,6 +2248,7 @@ document.addEventListener('change', e => {
 
   const b = e.target.closest('[data-budget-cat]');
   if (b) {
+    if (isViewer()) return;   /* 查看员只读：不落库 */
     const month = UI.budgetMonth || monthOf(todayISO());
     const catId = b.dataset.budgetCat;
     const val = round2(num(b.value));
@@ -2335,8 +2383,8 @@ bindDonutHover();
       }
       if (!SESSION) return;
       if (action === 'export-json') exportJSON();
-      else if (action === 'import-json') importJSON();
-      else if (action === 'new-tx') openTxModal();
+      else if (action === 'import-json') { if (canWrite()) importJSON(); else toast('查看员为只读权限，不能进行此操作', 'err'); }
+      else if (action === 'new-tx') { if (canWrite()) openTxModal(); else toast('查看员为只读权限，不能进行此操作', 'err'); }
     });
   }
 
