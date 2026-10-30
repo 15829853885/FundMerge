@@ -5,7 +5,7 @@
 
 'use strict';
 
-const APP_VERSION = '5.0.1';
+const APP_VERSION = '5.2.0';
 const APP_NAME = '合资金账';
 const APP_NAME_EN = 'FundMerge';
 const STORE_KEY = 'fund-ledger-v2';
@@ -126,6 +126,34 @@ function missingRateCurrencies() {
     });
   });
   return [...set];
+}
+
+/* 数据质量汇总（页面顶部提示用）。
+   missingRateCurrencies() 只回答「哪些币种缺汇率」；孤儿流水按笔数计、处置方式不同，
+   不能硬塞进去（否则会出现「有 2 种外币缺汇率」配一个治不了它的按钮）。
+   这里统一聚合成「一条问题 + 对应处置入口」。 */
+function dataQualityIssues() {
+  const issues = [];
+
+  const miss = missingRateCurrencies();
+  if (miss.length) issues.push({ kind: 'missing-rate', count: miss.length, currencies: miss });
+
+  /* 孤儿流水：找不到归属账户，金额已被排除在合计之外（txBase 返回 0） */
+  let orphan = 0;
+  (DB && DB.companies || []).forEach(co => {
+    (co.transactions || []).forEach(t => { if (isOrphanTx(t, co)) orphan++; });
+  });
+  if (orphan) issues.push({ kind: 'orphan-tx', count: orphan });
+
+  /* 本次加载被跳过的流水（缺 id 或缺日期，无法渲染） */
+  const dropped = num(NORMALIZE_REPAIRS.transactions);
+  if (dropped) issues.push({ kind: 'dropped-tx', count: dropped });
+
+  /* 本次加载补过 id 的账户（数据修复，仅提示一次，不阻断） */
+  const repaired = num(NORMALIZE_REPAIRS.accounts);
+  if (repaired) issues.push({ kind: 'repaired-account', count: repaired });
+
+  return issues;
 }
 
 /* ---------------------------------- 图标 ---------------------------------- */
@@ -361,6 +389,9 @@ function defaultDB() {
 
 /* ---------------------------------- 存储 ---------------------------------- */
 
+/* 归一化过程中的修复/丢弃计数（每次 normalize 重置），供 dataQualityIssues 提示用 */
+const NORMALIZE_REPAIRS = { accounts: 0, transactions: 0 };
+
 function normalizeCompany(c, idx, base) {
   c.id = c.id || uid('co');
   c.name = String(c.name || '未命名公司').trim() || '未命名公司';
@@ -373,8 +404,18 @@ function normalizeCompany(c, idx, base) {
   c.profile = normalizeProfile(c.profile);
 
   const objs = a => (Array.isArray(a) ? a : []).filter(x => x && typeof x === 'object');
-  c.accounts = objs(c.accounts).filter(a => a.id);
-  c.transactions = objs(c.transactions).filter(t => t.id && t.date);
+  /* 账户缺 id：补一个，不再静默丢弃（与公司、用户的处理保持一致）。
+     丢弃会让它的流水失去归属，变成孤儿流水——金额既找不到账户、又会被按 1:1 计入合计。 */
+  c.accounts = objs(c.accounts).map(a => {
+    if (!a.id) { a.id = uid('a'); NORMALIZE_REPAIRS.accounts++; }
+    return a;
+  });
+  /* 流水缺 id / 缺日期无法渲染，只能丢弃；但必须计数，由页面提示，不能静默 */
+  c.transactions = objs(c.transactions).filter(t => {
+    const ok = !!(t.id && t.date);
+    if (!ok) NORMALIZE_REPAIRS.transactions++;
+    return ok;
+  });
   c.debts = objs(c.debts);
   c.settlements = objs(c.settlements);
   c.budgets = objs(c.budgets);
@@ -435,6 +476,8 @@ function normalizeCompany(c, idx, base) {
 
 function normalize(raw) {
   const d = raw && typeof raw === 'object' ? raw : {};
+  NORMALIZE_REPAIRS.accounts = 0;
+  NORMALIZE_REPAIRS.transactions = 0;
   d.version = 3;
   d.meta = Object.assign({ currency: 'GHS', groupName: '' }, d.meta || {});
   if (!CURRENCIES[d.meta.currency]) d.meta.currency = 'GHS';
@@ -781,11 +824,25 @@ const totalBalance = (upto, co = COMPANY) =>
     return s + (v == null ? 0 : v);
   }, 0));
 
+/* 流水归属账户：优先 accountId，其次集团代付的 fundedAccountId */
+function txAccount(t, co = COMPANY) {
+  const a = accById(t.accountId, co);
+  if (a) return a;
+  return t.fundedAccountId ? accById(t.fundedAccountId, co) : undefined;
+}
+
+/* 孤儿流水：找不到归属账户，且不是「这笔钱不是本公司出的」noCash 镜像分录。
+   这类流水不能按 1:1 当本位币计入合计（REQ-22：绝不静默折算），一律排除并由页面提示。 */
+function isOrphanTx(t, co = COMPANY) {
+  if (!t || t.noCash) return false;
+  return !txAccount(t, co);
+}
+
 /* 单笔流水的本位币金额（多币种）：按发生日汇率折算，缺汇率按 0 计并已由页面提示 */
 function txBase(t, co = COMPANY) {
-  const acc = accById(t.accountId, co) || (t.fundedAccountId ? accById(t.fundedAccountId, co) : null);
-  const cur = acc ? accCurrency(acc) : baseCurrency();
-  const v = toBase(t.amount, cur, t.date);
+  const acc = txAccount(t, co);
+  if (!acc) return 0;   // 孤儿流水：不计入任何合计（由 dataQualityIssues 提示），绝不按 1:1 折算
+  const v = toBase(t.amount, accCurrency(acc), t.date);
   return v == null ? 0 : v;
 }
 
@@ -948,7 +1005,6 @@ function companyBalanceAt(co, upto) {
   /* 单遍扫描 + 按账户币种分桶，再统一折本位币。
      不能逐账户调 balanceOf：那是 O(流水 × 账户)，趋势图跑 200 个点会卡死。
      noCash 流水（accountId 为空）天然不入桶，顺带解决集团代付多扣一倍的问题。 */
-  const base = baseCurrency();
   const buckets = {};
   (co.accounts || []).forEach(a => {
     const cur = accCurrency(a);
@@ -959,7 +1015,8 @@ function companyBalanceAt(co, upto) {
     if (upto && t.date > upto) continue;
     if (t.noCash) continue;
     if (t.type !== 'in' && t.type !== 'out') continue;
-    const cur = accCur.get(t.accountId) || base;
+    const cur = accCur.get(t.accountId);
+    if (!cur) continue;              // 孤儿流水（账户已不存在）：不计入合计，由页面提示
     buckets[cur] = (buckets[cur] || 0) + (t.type === 'in' ? num(t.amount) : -num(t.amount));
   }
   let total = 0;
