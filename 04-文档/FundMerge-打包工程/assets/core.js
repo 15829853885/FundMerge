@@ -607,7 +607,7 @@ async function createUser({ username, displayName, password, role }) {
     id: uid('u'),
     username: String(username).trim(),
     displayName: String(displayName || username).trim(),
-    role: role === 'admin' ? 'admin' : 'staff',
+    role: ['admin', 'staff', 'viewer'].includes(role) ? role : 'staff',
     salt, hash,
     active: true,
     createdAt: new Date().toISOString(),
@@ -699,10 +699,34 @@ function startSession(user) {
 function endSession() { SESSION = null; }
 
 const isAdmin = () => !!SESSION && SESSION.role === 'admin';
+const isViewer = () => !!SESSION && SESSION.role === 'viewer';
+/* 查看员 = 只读：可看、可导出，不能增删改（canWrite 供写操作守卫使用） */
+const canWrite = () => !!SESSION && SESSION.role !== 'viewer';
+
+/* 写操作 action 清单：查看员（只读）触发这些 action 会被拦截 */
+const WRITE_ACTIONS = new Set([
+  'new-tx', 'new-transfer', 'tx-for-company', 'edit-tx', 'del-tx',
+  'new-acc', 'edit-acc', 'reconcile', 'del-acc',
+  'new-debt', 'edit-debt', 'settle-debt', 'del-debt',
+  'new-cat', 'edit-cat', 'del-cat',
+  'budget-save', 'budget-gen', 'budget-copy',
+  'new-project', 'edit-project', 'del-project',
+  'new-party', 'edit-party', 'del-party',
+  'new-advance', 'del-advance',
+  'new-invoice', 'edit-invoice', 'del-invoice',
+  'import-tx', 'import-confirm', 'import-pick',
+  'seed', 'clear-all',
+  'vault-save', 'vault-del', 'vault-del-bundle',
+  'new-company', 'edit-company', 'del-company', 'new-group-company', 'pick-group-company',
+  'new-user', 'edit-user', 'reset-pwd', 'del-user',
+  'save-currency', 'save-group', 'save-idle', 'set-parent-mode', 'set-data-dir', 'fx-add',
+  'pack-export', 'pack-import'
+]);
 
 function can(perm) {
   if (!SESSION) return false;
   if (SESSION.role === 'admin') return true;
+  if (SESSION.role === 'viewer') return ['view', 'export'].includes(perm);
   return ['view', 'tx.add', 'tx.edit', 'export'].includes(perm);
 }
 
@@ -1050,7 +1074,7 @@ function balanceSeries(from, to) {
 
 /* -------------------------------- 格式化补充 -------------------------------- */
 
-const roleLabel = r => (r === 'admin' ? '管理员' : '记账员');
+const roleLabel = r => (r === 'admin' ? '管理员' : r === 'viewer' ? '查看员' : '记账员');
 
 function initials(name) {
   const s = String(name || '?').trim();
@@ -1349,7 +1373,7 @@ async function ensureMasterAccount() {
 
 /* ------------------------------ 公司权限 ------------------------------ */
 
-/* 管理员不受限；记账员只能看被授权的公司（companyIds 为空也视为全部，兼容老数据） */
+/* 管理员不受限；记账员/查看员只能看被授权的公司（companyIds 为空也视为全部，兼容老数据） */
 function allowedCompanies() {
   if (!SESSION) return [];
   if (SESSION.role === 'admin') return DB.companies;

@@ -1424,7 +1424,7 @@ function viewUsers() {
   return `
   <div class="card">
     <div class="card-hd">
-      <div><div class="card-title">用户与权限</div><div class="card-sub">管理员可管理账户、分类与全部数据；记账员只能录入和查看</div></div>
+      <div><div class="card-title">用户与权限</div><div class="card-sub">管理员可管理账户、分类与全部数据；记账员只能录入和查看；查看员只读</div></div>
       <div class="card-actions"><button class="btn primary sm" data-action="new-user">${icon('userPlus', 14)} 新增用户</button></div>
     </div>
     <div class="table-wrap">
@@ -1442,6 +1442,7 @@ function viewUsers() {
         <div class="kv" style="grid-template-columns:110px 1fr">
           <dt>管理员</dt><dd>全部功能：记账、删除、账户、分类、预算、用户、设置、导出</dd>
           <dt>记账员</dt><dd>录入与编辑流水、查看报表、导出数据；不能删除流水、不能管理用户与分类</dd>
+          <dt>查看员</dt><dd>只读：查看全部页面与报表、导出数据；不能新增、编辑或删除任何数据</dd>
         </div>
       </div>
     </div>
