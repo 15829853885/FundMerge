@@ -2503,6 +2503,13 @@ async function importPack() {
 
   const mf = r.manifest;
   const st = mf.stats || {};
+  /* 预检结果：导入前就把「会丢什么」说清楚，用户还能取消 */
+  const wn = r.warnings || {};
+  const warnLines = [];
+  if (wn.companiesMissingId) warnLines.push(`有 <b>${wn.companiesMissingId}</b> 家公司缺少标识，导入后会自动补齐。`);
+  if (wn.accountsMissingId) warnLines.push(`有 <b>${wn.accountsMissingId}</b> 个账户缺少标识：导入后会自动补标识，但这些账户的原有流水可能找不到归属。`);
+  if (wn.orphanTransactions) warnLines.push(`有 <b>${wn.orphanTransactions}</b> 笔流水找不到所属账户：导入后这些金额<b>不会计入</b>任何合计（不会按 1:1 折算）。`);
+  if (wn.droppedTransactions) warnLines.push(`有 <b>${wn.droppedTransactions}</b> 笔流水缺少日期或标识，导入时会被跳过。`);
   openModal(modalShell({
     title: '导入账套',
     sub: '请核对账套摘要后再继续',
@@ -2512,6 +2519,7 @@ async function importPack() {
         <dt>账套名称</dt><dd>${esc(mf.packName || '—')}</dd>
         <dt>集团名称</dt><dd>${esc((mf.companyList || []).map(c => c.name).join('、') || '—')}</dd>
         <dt>公司数量</dt><dd>${st.companies || 0}</dd>
+        <dt>账户数量</dt><dd>${st.accounts || 0}</dd>
         <dt>流水笔数</dt><dd>${st.transactions || 0}</dd>
         <dt>附件数量</dt><dd>${st.files || 0}（${((st.fileBytes || 0) / 1024 / 1024).toFixed(1)} MB）</dd>
         <dt>用户数量</dt><dd>${st.users || 0}</dd>
@@ -2520,6 +2528,7 @@ async function importPack() {
         <dt>完整性</dt><dd>${r.checksumOk ? '<span class="pill ok">校验通过</span>' : '<span class="pill danger">校验失败</span>'}</dd>
       </dl>
       ${mf.partial ? '<div class="warn" style="margin-top:10px">这是<b>按公司导出</b>的部分账套，不是完整账套。</div>' : ''}
+      ${warnLines.length ? `<div class="warn" style="margin-top:10px">${warnLines.join('<br>')}</div>` : ''}
       <div class="warn" style="margin-top:10px">
         <b>覆盖导入会替换当前全部数据</b>（公司、流水、附件、用户）。导入前会自动做一次回滚备份，失败可恢复。
       </div>

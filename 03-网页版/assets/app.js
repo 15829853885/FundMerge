@@ -333,17 +333,30 @@ function renderView() {
 
   if (window.Scene3D) Scene3D.mount(root);
 
-  /* 缺汇率提示（REQ-22）：绝不按 1:1 静默折算，必须让用户看见 */
+  /* 数据质量提示：缺汇率（REQ-22：绝不按 1:1 静默折算）、孤儿流水、被跳过的流水 */
   try {
-    const miss = (typeof missingRateCurrencies === 'function') ? missingRateCurrencies() : [];
-    if (miss.length) {
+    const issues = (typeof dataQualityIssues === 'function') ? dataQualityIssues() : [];
+    /* 倒序 prepend，保证最终显示顺序与 issues 一致（缺汇率在前） */
+    issues.slice().reverse().forEach(it => {
+      let text = '', btn = '';
+      if (it.kind === 'missing-rate') {
+        text = `有 ${it.count} 种外币缺少汇率（${it.currencies.join('、')}），这些账户的金额<b>未计入</b>汇总。`;
+        btn = '<button class="btn sm secondary" data-action="nav" data-view="settings" style="margin-left:10px">去录入汇率</button>';
+      } else if (it.kind === 'orphan-tx') {
+        text = `有 ${it.count} 笔流水<b>找不到所属账户</b>，金额未计入任何合计（不会按 1:1 折算）。`;
+        btn = '<button class="btn sm secondary" data-action="nav" data-view="transactions" style="margin-left:10px">查看流水</button>';
+      } else if (it.kind === 'dropped-tx') {
+        text = `本次加载有 ${it.count} 笔流水因缺少日期或标识被跳过。`;
+      } else if (it.kind === 'repaired-account') {
+        text = `本次加载为 ${it.count} 个账户补齐了缺失的标识（数据修复，不影响使用）。`;
+      }
+      if (!text) return;
       const bar = document.createElement('div');
       bar.className = 'alert warn no-print';
-      bar.style.margin = '0 0 12px';
-      bar.innerHTML = `${icon('alert', 15)}<div>有 ${miss.length} 种外币缺少汇率（${miss.join('、')}），这些账户的金额<b>未计入</b>汇总。` +
-        `<button class="btn sm secondary" data-action="nav" data-view="settings" style="margin-left:10px">去录入汇率</button></div>`;
+      bar.style.margin = '0 0 8px';
+      bar.innerHTML = `${icon('alert', 15)}<div>${text}${btn}</div>`;
       root.prepend(bar);
-    }
+    });
   } catch (e) { /* 提示失败不影响主流程 */ }
 
   const meta = VIEW_META[UI.view] || ['', ''];
