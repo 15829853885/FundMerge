@@ -5,7 +5,7 @@
 
 'use strict';
 
-const APP_VERSION = '5.2.0';
+const APP_VERSION = '5.5.5';
 const APP_NAME = '合资金账';
 const APP_NAME_EN = 'FundMerge';
 const STORE_KEY = 'fund-ledger-v2';
@@ -13,6 +13,36 @@ const LEGACY_KEY = 'fund-ledger-v1';
 const DESKTOP = typeof window !== 'undefined' && !!window.desktop;
 
 let APP_INFO = null;
+
+/* 版本更新历史（设置页「更新历史」卡片逐条展示） */
+const CHANGELOG = [
+  { v: '5.5.5', date: '2026-10-31', items: ['设置页新增「更新历史」卡片，可随时查看历次版本', '重新设计软件图标，贴合资金管理用途', '重写操作手册，覆盖每个页面与每条业务流程', '新增面向非技术人员的通俗总结报告'] },
+  { v: '5.5.4', date: '2026-10-31', items: ['修复二次确认后弹窗不自动关闭的问题', '补全全部数据项的计算逻辑来源文档'] },
+  { v: '5.5.3', date: '2026-10-31', items: ['全量测试：修复内部转账转入账户余额不增加等 5 个缺陷', '补齐 22 处表单的校验声明'] },
+  { v: '5.5.0', date: '2026-10-31', items: ['深色模式下动效清晰可见', '新增鼠标指针反馈与粒子动效', '新增集团资金看板（实时资金流向）', '系统账户改为随票据自动生成'] },
+  { v: '5.4.0', date: '2026-10-31', items: ['统一 3D 动效体系，每页专属过渡', '增强按钮悬停反馈，适配桌面与移动端'] },
+  { v: '5.3.0', date: '2026-10-31', items: ['新增票据资金流转（付款待票 → 回票 → 报账）', '对账单新增「应付款项」'] },
+  { v: '5.2.0', date: '2026-10-30', items: ['登录身份改为下拉选择，按账号记忆', '注册页新增用户类型（记账员 / 查看员）', '数据完整性收口：孤儿流水不再按 1:1 折算'] },
+  { v: '5.0.1', date: '2026-10-29', items: ['REQ-03 收口，体验、无障碍与文档收尾'] },
+  { v: '5.0.0', date: '2026-10-29', items: ['完成 24 条需求，修复三个关键缺陷', '支持多币种记账与汇率折算'] },
+  { v: '4.9.2', date: '2026-10-28', items: ['首启页重做，文档随安装包发布'] },
+  { v: '4.9.0', date: '2026-10-28', items: ['云盘备份改为账套包版本池'] },
+  { v: '4.8.0', date: '2026-10-28', items: ['新增账套包：整账套导出与恢复'] },
+  { v: '4.7.6', date: '2026-10-28', items: ['上线前安全审计（STRIDE + OWASP）', '修复卸载不删库、安装器保护等问题'] },
+  { v: '4.7.0', date: '2026-10-28', items: ['关闭弹窗卡顿修复', '界面视觉全面升级'] },
+  { v: '4.6.0', date: '2026-10-28', items: ['预算自动生成', '统一表单校验'] },
+  { v: '4.5.0', date: '2026-10-28', items: ['新增云盘备份（WebDAV / Google Drive）'] },
+  { v: '4.4.0', date: '2026-10-28', items: ['指标穿透与体验优化'] },
+  { v: '4.3.0', date: '2026-10-28', items: ['业务闭环：往来款、借支、票据完整流转'] },
+  { v: '4.2.0', date: '2026-10-28', items: ['权限体系（管理员 / 记账员 / 查看员）', '操作日志、凭证号、统一校验'] },
+  { v: '4.1.0', date: '2026-10-28', items: ['统一动效'] },
+  { v: '4.0.0', date: '2026-10-28', items: ['品牌升级，第一批需求落地'] },
+  { v: '3.4.0', date: '2026-10-28', items: ['集团资金体系', '多公司合并报表'] },
+  { v: '3.2.0', date: '2026-10-28', items: ['公司档案管理'] },
+  { v: '3.0.0', date: '2026-10-28', items: ['多公司独立账本（重大重构）'] },
+  { v: '2.0.0', date: '2026-10-28', items: ['财务功能成型：往来款、预算、报表、登录', '本位币支持塞地（GHS）'] },
+  { v: '1.0', date: '2026-10-28', items: ['起点：记录现金及银行的钱流向和余额'] }
+];
 
 /* ---------------------------------- 工具 ---------------------------------- */
 
@@ -283,10 +313,79 @@ const CAT_COLORS = ['#2563eb', '#4f46e5', '#7c3aed', '#c026d3', '#db2777', '#dc2
 /* ---------------------------------- 公司 ---------------------------------- */
 
 const CO_COLORS = ['#4f46e5', '#0891b2', '#059669', '#d97706', '#db2777', '#7c3aed', '#dc2626', '#0d9488'];
-const COMPANY_KEYS = ['accounts', 'transactions', 'debts', 'settlements', 'budgets', 'categories'];
+
+/* -------------------------------- 账户类型 -------------------------------- */
+
+/* cash / bank：真实资金账户，可手工记账、可转账
+   bill_pending / unreported：票据流转用的内置系统账户，只由票据自动记账，禁止手工改删 */
+const ACCOUNT_TYPE_LABEL = { cash: '现金', bank: '银行', bill_pending: '票据未回资金', unreported: '未报账资金' };
+const SYSTEM_ACCOUNT_TYPES = ['bill_pending', 'unreported'];
+const SYS_ACC_ID = { bill_pending: 'sys-bill-pending', unreported: 'sys-unreported' };
+const isSystemAcc = a => !!a && SYSTEM_ACCOUNT_TYPES.includes(a.type);
+
+/* 确保每家公司都有两个内置系统账户（幂等，不改已有余额）。
+   账户币种跟随本位币：票据不跨币种，避免折算噪音。 */
+function ensureSystemAccounts(co, base) {
+  if (!co) return {};
+  if (!Array.isArray(co.accounts)) co.accounts = [];
+  const cur = (typeof base === 'string' && CURRENCIES[base]) ? base : baseCurrency();
+  SYSTEM_ACCOUNT_TYPES.forEach(t => {
+    let a = co.accounts.find(x => x && (x.sysType === t || x.id === SYS_ACC_ID[t]));
+    if (!a) {
+      a = {
+        id: SYS_ACC_ID[t],
+        name: ACCOUNT_TYPE_LABEL[t],
+        type: t,
+        sysType: t,
+        system: true,
+        currency: cur,
+        bankName: '', accountNo: '',
+        openingBalance: 0,
+        openingDate: todayISO(),
+        note: '系统内置账户，由票据自动记账',
+        active: true
+      };
+      co.accounts.push(a);
+    }
+    /* 老数据/导入账套可能缺这些标记。
+       系统账户是"票据流转的中间桶"，不是真实账户：
+       名称固定、永远启用、不挂开户行与账号——否则用户会把它当成可手工维护的账户去改。 */
+    a.sysType = t;
+    a.system = true;
+    a.type = t;
+    a.active = true;
+    a.name = ACCOUNT_TYPE_LABEL[t];
+    a.bankName = '';
+    a.accountNo = '';
+    a.note = '系统内置账户，由票据自动生成与结转';
+    if (!CURRENCIES[a.currency]) a.currency = cur;
+  });
+  return { billPending: sysAcc('bill_pending', co), unreported: sysAcc('unreported', co) };
+}
+
+/* 可手工记账的账户：系统账户（票据未回 / 未报账）由票据流程维护，
+   永远不出现在任何表单下拉里。所有弹窗统一走这个函数，
+   避免再出现「某个弹窗忘了过滤」导致系统账户被当成付款账户。 */
+function manualAccounts(co) {
+  const c = co || COMPANY;
+  if (!c || !Array.isArray(c.accounts)) return [];
+  return c.accounts.filter(a => a && !isSystemAcc(a) && a.active !== false);
+}
+
+/* 票据自动生成的流水：不允许在流水页直接编辑/删除，
+   必须回票据页走「撤销报账 / 回票」等流程，否则票据与流水会脱节。 */
+const isInvoiceTx = t => !!(t && t.fromInvoice);
+
+/* 取某公司的内置账户；没有就返回 null（调用方自行兜底） */
+function sysAcc(type, co) {
+  const c = co || COMPANY;
+  if (!c || !Array.isArray(c.accounts)) return null;
+  return c.accounts.find(a => a && (a.sysType === type || a.id === SYS_ACC_ID[type])) || null;
+}
+const COMPANY_KEYS = ['accounts', 'transactions', 'debts', 'settlements', 'budgets', 'categories', 'invoices', 'advances', 'parties', 'projects'];
 
 function newCompany(name, idx = 0) {
-  return {
+  const co = {
     id: uid('co'),
     name: name || '新公司',
     shortName: '',
@@ -304,6 +403,9 @@ function newCompany(name, idx = 0) {
     settlements: [],
     budgets: []
   };
+  /* 内置票据账户：新公司一建立就有，后续票据登记直接用 */
+  ensureSystemAccounts(co);
+  return co;
 }
 
 function emptyProfile() {
@@ -369,7 +471,12 @@ let UI = {
   budgetShowAll: false,
   reportRange: { from: '', to: '' },
   groupRange: { from: '', to: '' },
-  groupPreset: ''
+  groupPreset: '',
+  /* 集团资金看板：默认「本年」，与集团报表的默认区间保持一致 */
+  fbPreset: 'year',
+  fbLive: true,
+  /* 流向明细页的筛选条件（由看板卡片/丝带/节点点击写入） */
+  flowDetail: { scope: 'all', from: '', to: '', company: '', month: '', kind: '' }
 };
 
 function defaultDB() {
@@ -419,6 +526,12 @@ function normalizeCompany(c, idx, base) {
   c.debts = objs(c.debts);
   c.settlements = objs(c.settlements);
   c.budgets = objs(c.budgets);
+  /* 新字段（票据 / 借支 / 往来单位 / 项目）：确保是数组，并纳入 COMPANY_KEYS 代理，
+     避免 DB.invoices 这类访问拿到 undefined（潜在缺陷）。 */
+  c.invoices = objs(c.invoices);
+  c.advances = objs(c.advances);
+  c.parties = objs(c.parties);
+  c.projects = objs(c.projects);
   const catList = objs(c.categories);
   c.categories = catList.length
     ? catList
@@ -433,7 +546,9 @@ function normalizeCompany(c, idx, base) {
   });
 
   c.accounts.forEach(a => {
-    a.type = a.type === 'cash' ? 'cash' : 'bank';
+    /* 四种类型：现金 / 银行 / 票据未回资金 / 未报账资金（后两者为内置系统账户） */
+    a.type = ACCOUNT_TYPE_LABEL[a.type] ? a.type : 'bank';
+    if (SYSTEM_ACCOUNT_TYPES.includes(a.type)) a.system = true;
     a.currency = CURRENCIES[a.currency] ? a.currency : (base || 'GHS');
     a.openingBalance = num(a.openingBalance);
     a.openingDate = a.openingDate || todayISO();
@@ -470,6 +585,10 @@ function normalizeCompany(c, idx, base) {
     x.currency = CURRENCIES[x.currency] ? x.currency : (base || 'GHS');
   });
   c.settlements.forEach(s => { s.amount = Math.abs(num(s.amount)); });
+
+  /* 票据：状态 / 回票金额 / 形态 归一化，再补两个内置账户 */
+  normalizeInvoices(c, base);
+  ensureSystemAccounts(c, base);
 
   return c;
 }
@@ -542,6 +661,13 @@ function normalize(raw) {
   if (!d.companies.some(c => c.id === d.meta.activeCompanyId)) {
     d.meta.activeCompanyId = d.companies[0].id;
   }
+
+  /* 票据期初迁移：按今日快照把存量票据计入两个内置账户（每张票只迁一次）。
+     首次升级时执行，之后 migrated 标记让它变成空操作。 */
+  d.companies.forEach(c => {
+    try { migrateInvoices(c, d.meta.fx.base); } catch (e) { /* 迁移失败不阻断加载 */ }
+  });
+
   return d;
 }
 
@@ -598,6 +724,9 @@ async function loadDB() {
 
 let saveWarned = false;
 function saveDB() {
+  /* 数据落盘后广播一次（供看板等「实时」视图做局部刷新）。
+     监听方自行防抖，这里只负责通知，不携带数据，避免监听方持有过期引用。 */
+  try { window.dispatchEvent(new CustomEvent('fm:db-saved')); } catch (e) { /* 环境不支持时忽略 */ }
   if (DESKTOP) {
     window.desktop.save(DB).then(r => {
       if (r && r.conflict) {
@@ -812,8 +941,10 @@ function balanceOf(acc, upto, co = COMPANY) {
         else b -= num(t.amount);
       }
     }
-    /* 跨币种转账：目标账户按「到账金额」入账，缺失时回落到 amount */
-    if (t.type === 'transfer' && t.toAccountId === acc.id) b += num(t.toAmount != null ? t.toAmount : t.amount);
+    /* 跨币种转账：目标账户按「到账金额」入账，缺失时回落到 amount。
+       注意 toAmount 可能被存成空字符串 ''（非跨币种转账），必须用数值判断，
+       否则 '' != null 为真，num('') = 0，转入账户会少加一笔（真实缺陷）。 */
+    if (t.type === 'transfer' && t.toAccountId === acc.id) b += num(t.toAmount > 0 ? t.toAmount : t.amount);
   }
   return round2(b);
 }
@@ -878,7 +1009,7 @@ function accountStats(acc, from, to, co = COMPANY) {
         if (t.direction === 'in') s.transferIn += num(t.amount);
         else s.transferOut += num(t.amount);
       }
-      if (t.toAccountId === acc.id) s.transferIn += num(t.toAmount != null ? t.toAmount : t.amount);
+      if (t.toAccountId === acc.id) s.transferIn += num(t.toAmount > 0 ? t.toAmount : t.amount);
     }
   }
   Object.keys(s).forEach(k => { s[k] = round2(s[k]); });
@@ -1038,28 +1169,36 @@ function companyTotals(co, upto) {
     byCurrency[cur] = round2((byCurrency[cur] || 0) + v);
     if (cur !== baseCurrency() && baseRate(cur, upto) == null && !missing.includes(cur)) missing.push(cur);
   });
-  const cash = round2((co.accounts || []).filter(a => a.type === 'cash').reduce((s, a) => {
+  /* 按账户类型分别合计：不能用 total - cash 反推银行，
+     否则新加的两个票据系统账户会被算进「银行存款」。 */
+  const sumType = ty => round2((co.accounts || []).filter(a => a.type === ty).reduce((s, a) => {
     const v = toBase(balanceOf(a, upto, co), accCurrency(a), upto);
     return s + (v == null ? 0 : v);
   }, 0));
+  const cash = sumType('cash');
+  const bank = sumType('bank');
+  const billPending = sumType('bill_pending');
+  const unreported = sumType('unreported');
   /* 往来口径：借出未收 = 应收；借入未还 + 员工未报销 = 应付。
      早期版本漏了这两个字段，导致「往来账款净额」下钻恒为 NaN。 */
   const receivable = debtTotals('lend', co).remaining;
   const payable = round2(debtTotals('borrow', co).remaining + debtTotals('reimburse', co).remaining);
-  return { total, cash, bank: round2(total - cash), receivable, payable, byCurrency, missing };
+  return { total, cash, bank, billPending, unreported, receivable, payable, byCurrency, missing };
 }
 
 function groupTotals(upto) {
   const list = (typeof accountingCompanies === 'function') ? accountingCompanies() : DB.companies;
-  const r = { total: 0, cash: 0, bank: 0, receivable: 0, payable: 0, count: list.length };
+  const r = { total: 0, cash: 0, bank: 0, billPending: 0, unreported: 0, receivable: 0, payable: 0, count: list.length };
   list.forEach(co => {
     const t = companyTotals(co, upto);
     r.total += t.total; r.cash += t.cash; r.bank += t.bank;
+    r.billPending += t.billPending; r.unreported += t.unreported;
     r.receivable += debtTotals('lend', co).remaining;
     r.payable += debtTotals('borrow', co).remaining + debtTotals('reimburse', co).remaining;
   });
   return {
     total: round2(r.total), cash: round2(r.cash), bank: round2(r.bank),
+    billPending: round2(r.billPending), unreported: round2(r.unreported),
     receivable: round2(r.receivable), payable: round2(r.payable), count: r.count
   };
 }
@@ -1104,6 +1243,143 @@ function groupCashFlow(from, to) {
   const netTotal = round2(act.op.net + act.inv.net + act.fin.net);
   const beginCash = round2(accountingCompanies().reduce((s, co) => s + companyBalanceAt(co, addDays(from, -1)), 0));
   return { rows, act, netTotal, beginCash, endCash: round2(beginCash + netTotal), from, to };
+}
+
+/* ------------------------------ 集团资金流向 ------------------------------ */
+
+/* 公司间资金流向矩阵：把「公司间转账」与「集团代付」按 来源 → 去向 聚合。
+   口径（与账本一致，绝不多算）：
+   1. 公司间转账在两家公司各存一条镜像，只取 direction === 'out' 的那条；
+      若历史数据里同一 pairId 出现两条 out（导入脏数据），按 pairId 去重。
+   2. 集团代付：子公司账上那条 noCash 流水代表「钱由总公司出」，
+      来源取 fundedBy 公司，金额按总公司出资账户的币种折算。
+   3. 全部折本位币；缺汇率的流水跳过并计入 missing，不按 1:1 静默折算（REQ-22）。
+   4. 只在单家公司内部搬账户（内部转账）不产生跨公司流向，不计入。 */
+function groupFlowMatrix(from, to) {
+  const cos = DB.companies || [];
+  const accIds = new Set(accountingCompanies().map(c => c.id));
+  const nodes = new Map();
+  const edges = new Map();
+  const missing = [];
+  const seenPair = new Set();
+
+  const ensure = co => {
+    let n = nodes.get(co.id);
+    if (!n) {
+      n = {
+        id: co.id, name: co.name, color: co.color || '#4f46e5', isParent: !!co.isParent,
+        inAccounting: accIds.has(co.id),
+        inflow: 0, outflow: 0, count: 0, balance: companyBalanceAt(co, to || todayISO())
+      };
+      nodes.set(co.id, n);
+    }
+    return n;
+  };
+
+  let transferCount = 0, payCount = 0;
+  const add = (fromCo, toCo, amt, date, kind, summary) => {
+    if (!fromCo || !toCo || fromCo.id === toCo.id) return;
+    if (!(amt > 0)) return;
+    if (kind === 'transfer') transferCount++; else payCount++;
+    const a = ensure(fromCo), b = ensure(toCo);
+    a.outflow = round2(a.outflow + amt);
+    b.inflow = round2(b.inflow + amt);
+    a.count++; b.count++;
+    const key = fromCo.id + '>' + toCo.id;
+    let e = edges.get(key);
+    if (!e) {
+      e = { from: fromCo.id, to: toCo.id, amount: 0, count: 0, transfer: 0, pay: 0, lastDate: '', lastSummary: '' };
+      edges.set(key, e);
+    }
+    e.amount = round2(e.amount + amt);
+    e[kind] = round2(e[kind] + amt);
+    e.count++;
+    if (!e.lastDate || date > e.lastDate) { e.lastDate = date; e.lastSummary = summary || ''; }
+  };
+
+  const inRange = d => (!from || d >= from) && (!to || d <= to);
+
+  cos.forEach(co => {
+    (co.transactions || []).forEach(t => {
+      if (!inRange(t.date)) return;
+
+      /* 公司间转账：只认 out 腿 */
+      if (t.type === 'transfer' && t.peerCompanyId && t.direction !== 'in') {
+        if (t.pairId) {
+          if (seenPair.has(t.pairId)) return;
+          seenPair.add(t.pairId);
+        }
+        const peer = coById(t.peerCompanyId);
+        if (!peer) return;
+        const acc = (co.accounts || []).find(a => a.id === t.accountId);
+        const cur = acc ? accCurrency(acc) : baseCurrency();
+        const amt = toBase(t.amount, cur, t.date);
+        if (amt == null) { if (!missing.includes(cur)) missing.push(cur); return; }
+        add(co, peer, amt, t.date, 'transfer', t.summary || '公司间转账');
+        return;
+      }
+
+      /* 集团代付：子公司账上的 noCash 流水，钱从总公司账户出 */
+      if (t.noCash && t.fundedBy) {
+        const src = coById(t.fundedBy);
+        if (!src) return;
+        const acc = (src.accounts || []).find(a => a.id === t.fundedAccountId);
+        const cur = acc ? accCurrency(acc) : baseCurrency();
+        const amt = toBase(t.amount, cur, t.date);
+        if (amt == null) { if (!missing.includes(cur)) missing.push(cur); return; }
+        add(src, co, amt, t.date, 'pay', t.summary || '集团代付');
+      }
+    });
+  });
+
+  const edgeList = [...edges.values()].sort((a, b) => b.amount - a.amount);
+  /* 没有流向的公司也要进节点表：
+     否则「3 家公司、本月没有内部转账」会渲染成"还看不出集团内流向"，
+     用户会以为数据没读到。图里照样画出节点，只是没有丝带。 */
+  cos.forEach(co => { if (!nodes.has(co.id)) ensure(co); });
+  const nodeList = [...nodes.values()].sort((a, b) => b.balance - a.balance);
+  const transferTotal = round2(edgeList.reduce((s, e) => s + e.transfer, 0));
+  const payTotal = round2(edgeList.reduce((s, e) => s + e.pay, 0));
+  const totalFlow = round2(transferTotal + payTotal);
+  const totalCount = edgeList.reduce((s, e) => s + e.count, 0);
+  const maxEdge = edgeList.length ? edgeList[0].amount : 0;
+  const lastDate = edgeList.reduce((m, e) => (e.lastDate > m ? e.lastDate : m), '');
+
+  return {
+    from, to, nodes: nodeList, edges: edgeList,
+    transferTotal, payTotal, totalFlow, totalCount, maxEdge, lastDate,
+    transferCount, payCount,
+    pairCount: edgeList.length, missing,
+    balanceTotal: round2(nodeList.reduce((s, n) => s + (n.inAccounting ? n.balance : 0), 0))
+  };
+}
+
+/* 近 N 个月的内部流转趋势：逐月调用 groupFlowMatrix，
+   保证与看板主口径完全一致（绝不另写一套算法，否则两个数迟早对不上）。
+   6 次聚合 × 单遍扫描，万级流水下约 3–6ms，5 秒一次可以接受。 */
+function groupFlowTrend(endDate, months = 6) {
+  const end = endDate || todayISO();
+  const y = Number(end.slice(0, 4)), m = Number(end.slice(5, 7));
+  const keys = [];
+  for (let i = months - 1; i >= 0; i--) {
+    let yy = y, mm = m - i;
+    while (mm <= 0) { mm += 12; yy -= 1; }
+    keys.push(`${yy}-${pad2(mm)}`);
+  }
+  return keys.map(k => {
+    const from = `${k}-01`;
+    const last = lastDayOfMonth(k);
+    const to = last > end ? end : last;
+    const d = groupFlowMatrix(from, to);
+    return {
+      key: k,
+      label: `${Number(k.slice(5, 7))}月`,
+      transfer: d.transferTotal,
+      pay: d.payTotal,
+      total: d.totalFlow,
+      count: d.totalCount
+    };
+  });
 }
 
 /* -------------------------------- 时间工具 -------------------------------- */
@@ -1334,7 +1610,8 @@ const isParentCompany = co => !!(co && co.isParent);
 function groupPayAccounts() {
   const p = parentCompany();
   if (!p || !COMPANY || p.id === COMPANY.id) return [];
-  return p.accounts.filter(a => a.active !== false);
+  /* 只能从总公司真实账户出资：票据的两个系统账户不是可付款账户 */
+  return manualAccounts(p);
 }
 
 /* 集团代付：在总公司账上生成一条对应支出（同 id 关联，编辑/删除时同步） */
@@ -1545,6 +1822,167 @@ function advanceInfo(a) {
 
 /* ---------- 票据未回 ---------- */
 const INVOICE_STATUS = { none: '未回', partial: '部分回', done: '已回' };
+const INVOICE_FORM = { unreported: '未报账', reported: '已报账' };
+
+/* 票据形态说明：
+   status 决定「钱在哪个桶」：none/partial → 票据未回资金；done → 未报账资金
+   form   决定「是否已记费用」：unreported 未记；reported 已记（报账会减少账面资金） */
+function normalizeInvoices(co, base) {
+  const list = ensureInvoiceList(co);
+  list.forEach(inv => {
+    inv.amount = Math.abs(num(inv.amount));
+    let got = Math.max(0, Math.min(inv.amount, num(inv.receivedAmount)));
+    let st = ['none', 'partial', 'done'].includes(inv.status) ? inv.status : '';
+    /* 状态与回票金额互相校正：以「已回金额」为准推断状态，只在状态缺失时使用 */
+    if (!st) st = inv.amount > 0 && got >= inv.amount - 0.005 ? 'done' : (got > 0 ? 'partial' : 'none');
+    if (st === 'done' && got <= 0) got = inv.amount;        // 旧数据：手工改成已回但没填回票金额
+    if (st === 'none') got = 0;
+    if (st === 'partial' && got >= inv.amount - 0.005) st = 'done';
+    inv.status = st;
+    inv.receivedAmount = round2(got);
+    inv.form = inv.form === 'reported' ? 'reported' : 'unreported';
+    inv.currency = CURRENCIES[inv.currency] ? inv.currency : (base || 'GHS');
+    inv.accountId = inv.accountId || '';
+    inv.expenseCategoryId = inv.expenseCategoryId || '';
+    if (!Array.isArray(inv.txIds)) inv.txIds = [];
+    inv.reportedAt = inv.reportedAt || '';
+    inv.reportedBy = inv.reportedBy || '';
+  });
+  return list;
+}
+
+/* 票据资金分录：纯函数，返回一条要写入 co.transactions 的流水（不含 id）
+   event: register（登记付款时挪进票据桶） / receive-done（整张回完，票据未回 → 未报账）
+   注意：内部转移用 transfer，天然不改变账面资金总额；只有报账才用 out（减少总额）。 */
+function invoicePosting(inv, event, co = COMPANY) {
+  const A = round2(num(inv.amount));
+  if (!(A > 0)) return null;
+  const pending = sysAcc('bill_pending', co);
+  const unreported = sysAcc('unreported', co);
+  const pay = (co.accounts || []).find(a => a.id === inv.accountId && !isSystemAcc(a)) || null;
+  const base = {
+    fromInvoice: inv.id,
+    invoiceEvent: event,
+    operator: (SESSION && SESSION.displayName) || '系统',
+    noCash: false,
+    createdAt: new Date().toISOString()
+  };
+  const move = (from, to, date) => ({
+    ...base, type: 'transfer', direction: 'out',
+    date: date || inv.payDate || todayISO(),
+    accountId: from ? from.id : '',
+    toAccountId: to ? to.id : '',
+    amount: A, toAmount: A,
+    summary: event === 'register' ? `付款待票：${inv.party || ''}` : `回票转入：${inv.party || ''}` ,
+    counterparty: inv.party || '',
+    categoryId: '', voucherNo: ''
+  });
+
+  /* 登记永远先进「票据未回资金」：不管登记时选的是未回还是已回，
+     钱都先落到票据桶；整张回完再由 receive-done 转入「未报账资金」。
+     这样两条路径（登记·已回 / 登记·未回后回票）走同一套分录，不会重复扣减。 */
+  if (event === 'register') {
+    if (!pending || !pay) return null;
+    return move(pay, pending, inv.payDate);
+  }
+  if (event === 'receive-done') {
+    if (!pending || !unreported) return null;
+    return move(pending, unreported, inv.actualDate || todayISO());
+  }
+  return null;
+}
+
+/* 把分录写进流水，并记到票据的 txIds（幂等：同一事件只写一次） */
+function postInvoice(inv, event, co = COMPANY) {
+  if (!co || !Array.isArray(co.transactions)) return null;
+  /* 已报账的票据已经进过报表，不再产生内部流转流水（防止调用方重复记账） */
+  if (inv.form === 'reported') return null;
+  if ((inv.txIds || []).some(id => co.transactions.some(t => t.id === id && t.invoiceEvent === event))) return null;
+  const t = invoicePosting(inv, event, co);
+  if (!t) return null;
+  t.id = uid('t');
+  co.transactions.push(t);
+  if (!Array.isArray(inv.txIds)) inv.txIds = [];
+  inv.txIds.push(t.id);
+  return t;
+}
+
+/* 报账：未报账资金 → 费用分类（这一步才真正减少账面资金） */
+function reportInvoice(inv, categoryId, co = COMPANY) {
+  const A = round2(num(inv.amount));
+  if (!(A > 0)) return null;
+  const unreported = sysAcc('unreported', co);
+  if (!unreported) return null;
+  const t = {
+    id: uid('t'), type: 'out', date: todayISO(),
+    accountId: unreported.id,
+    categoryId: categoryId || inv.expenseCategoryId || '',
+    amount: A,
+    summary: `票据报账：${inv.party || ''}`,
+    counterparty: inv.party || '',
+    voucherNo: '',
+    operator: (SESSION && SESSION.displayName) || '',
+    noCash: false,
+    fromInvoice: inv.id, invoiceEvent: 'report',
+    createdAt: new Date().toISOString()
+  };
+  co.transactions.push(t);
+  if (!Array.isArray(inv.txIds)) inv.txIds = [];
+  inv.txIds.push(t.id);
+  inv.form = 'reported';
+  if (categoryId) inv.expenseCategoryId = categoryId;
+  inv.reportedAt = new Date().toISOString();
+  inv.reportedBy = (SESSION && SESSION.displayName) || '';
+  return t;
+}
+
+/* 撤销报账：删掉报账那笔支出，形态回到未报账（内部转移流水保留） */
+function unreportInvoice(inv, co = COMPANY) {
+  if (!co) return false;
+  co.transactions = (co.transactions || []).filter(t => !(t.fromInvoice === inv.id && t.invoiceEvent === 'report'));
+  inv.txIds = (inv.txIds || []).filter(id => (co.transactions || []).some(t => t.id === id));
+  inv.form = 'unreported';
+  inv.reportedAt = '';
+  inv.reportedBy = '';
+  return true;
+}
+
+/* 删除票据时清掉它生成的全部流水 */
+function removeInvoicePostings(inv, co = COMPANY) {
+  if (!co) return 0;
+  const ids = new Set(inv.txIds || []);
+  const before = (co.transactions || []).length;
+  co.transactions = (co.transactions || []).filter(t => !(t.fromInvoice === inv.id || ids.has(t.id)));
+  return before - co.transactions.length;
+}
+
+/* 期初迁移：按今日快照把存量票据计入两个内置账户（每张票只迁一次） */
+function migrateInvoices(co, base) {
+  const list = ensureInvoiceList(co).filter(i => !i.migrated);
+  if (!list.length) return { count: 0, pending: 0, unreported: 0 };
+  const sys = ensureSystemAccounts(co, base);
+  let dp = 0, du = 0;
+  list.forEach(inv => {
+    const A = round2(num(inv.amount));
+    if (inv.form !== 'reported') {
+      if (inv.status === 'done') du += A; else dp += A;
+    }
+    inv.migrated = true;
+    inv.form = inv.form === 'reported' ? 'reported' : 'unreported';
+  });
+  if (sys.billPending) sys.billPending.openingBalance = round2(num(sys.billPending.openingBalance) + dp);
+  if (sys.unreported) sys.unreported.openingBalance = round2(num(sys.unreported.openingBalance) + du);
+  return { count: list.length, pending: round2(dp), unreported: round2(du) };
+}
+
+/* 票据两个桶的当前金额（按账户余额算，已含历史迁移期初） */
+function invoiceFund(co = COMPANY, upto) {
+  const p = sysAcc('bill_pending', co);
+  const u = sysAcc('unreported', co);
+  const pv = p ? toBase(balanceOf(p, upto, co), accCurrency(p), upto) : 0;
+  const uv = u ? toBase(balanceOf(u, upto, co), accCurrency(u), upto) : 0;
+  return { pending: round2(pv == null ? 0 : pv), unreported: round2(uv == null ? 0 : uv) };
+}
 
 function ensureInvoiceList(co) {
   if (!Array.isArray(co.invoices)) co.invoices = [];

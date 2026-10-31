@@ -89,6 +89,28 @@
   --focus-line: color-mix(in srgb, var(--brand) 55%, var(--surface));  /* 控件聚焦边框（自适应深浅主题） */
   --focus-ring: color-mix(in srgb, var(--brand) 14%, transparent);
   --sh-xl: 0 32px 80px -24px rgba(15,23,42,.45);
+
+  /* ---- v5.5 浮起与交互反馈 ----
+     浅色主题用中性投影表达"离开桌面"；深色主题的黑色投影在 #0b1220 上几乎不可见，
+     所以深色下改由「品牌色外发光 + 白色 1px 内沿」承担同一语义（见下方 [data-theme=dark]）。
+     两者切换只换令牌，规则里不要再写死 rgba 投影。 */
+  --elev-lift:        0 18px 40px -18px rgba(16, 24, 40, .26), 0 4px 12px -6px rgba(16, 24, 40, .10);
+  --elev-lift-strong: 0 20px 44px -20px rgba(16, 24, 40, .30);
+  --elev-rim:         color-mix(in srgb, var(--brand) 26%, transparent);
+  --fx-rim:           color-mix(in srgb, var(--brand) 22%, var(--line));
+  --fx-spot:          color-mix(in srgb, var(--brand) 12%, transparent);
+
+  /* 指针层与粒子的取色（fx.js 用 getComputedStyle 读取，改主题后重新读取）。
+     必须是 R,G,B 三段，方便在 canvas 里拼 rgba()。 */
+  --fx-dot:     79, 70, 229;
+  --fx-link:    99, 102, 241;
+  --fx-burst-1: 99, 102, 241;
+  --fx-burst-2: 220, 38, 38;
+  --fx-burst-3: 5, 150, 105;
+  /* 点击水波纹：品牌色的低饱和版本，像水面一圈涟漪，不像"魔法阵" */
+  --fx-ring: 79, 70, 229;
+  /* 看板丝带上流动的点的颜色：浅色底用白点衬深色丝带 */
+  --fx-flow: #ffffff;
 }
 
 * { box-sizing: border-box; }
@@ -202,6 +224,22 @@ h1, h2, h3, h4, p { margin: 0; }
 .nav-item svg { flex: none; color: var(--muted); transition: color .14s; }
 .nav-item:hover { background: var(--surface-3); color: var(--ink); }
 .nav-item:hover svg { color: var(--ink-3); }
+.nav-item { position: relative; }
+/* hover 时左侧亮起一小段竖条：与选中态的整条指示区分开，只表示"指针在这里" */
+@media (hover: hover) and (pointer: fine) {
+  .nav-item::after {
+    content: "";
+    position: absolute; left: 0; top: 50%;
+    width: 2px; height: 0; border-radius: 2px;
+    background: color-mix(in srgb, var(--brand) 70%, transparent);
+    transform: translateY(-50%);
+    transition: height var(--dur-2) var(--ease-standard);
+    pointer-events: none;
+  }
+  .nav-item:hover::after { height: 14px; }
+  .nav-item.is-active::after { display: none; }
+}
+
 .nav-item.is-active { background: var(--brand-soft); color: var(--brand-600); font-weight: 600; }
 .nav-item.is-active svg { color: var(--brand); }
 .nav-badge {
@@ -1293,7 +1331,7 @@ table.tbl tbody tr { transition: background var(--dur-1) var(--ease-soft); }
 .stat.hero canvas.scene-canvas {
   position: absolute; inset: 0; z-index: 0;
   width: 100%; height: 100%;
-  opacity: .62; pointer-events: none;
+  opacity: .42; pointer-events: none;
 }
 .stat.hero > *:not(canvas) { position: relative; z-index: 1; }
 
@@ -1615,6 +1653,29 @@ table.tbl tbody tr { transition: background var(--dur-1) var(--ease-soft); }
   --sh-sm: 0 1px 3px rgba(0, 0, 0, .45);
   --sh-md: 0 6px 20px rgba(0, 0, 0, .50);
   --sh-lg: 0 18px 48px rgba(0, 0, 0, .58);
+
+  /* 深色下的"浮起"：黑色投影对深底无效，用品牌色光晕表达高度，
+     再补一道 1px 内沿把卡片边缘从背景里"提"出来。 */
+  --elev-lift:
+    0 20px 46px -20px rgba(0, 0, 0, .72),
+    0 0 0 1px color-mix(in srgb, var(--brand) 34%, transparent),
+    0 0 34px -10px color-mix(in srgb, var(--brand) 46%, transparent);
+  --elev-lift-strong:
+    0 24px 56px -22px rgba(0, 0, 0, .78),
+    0 0 0 1px color-mix(in srgb, var(--brand) 42%, transparent),
+    0 0 40px -8px color-mix(in srgb, var(--brand) 54%, transparent);
+  --elev-rim: color-mix(in srgb, var(--brand) 56%, transparent);
+  --fx-spot: color-mix(in srgb, var(--brand) 30%, transparent);
+
+  /* 深色底上的粒子必须更亮：同一档透明度在浅色底上是"淡雅"，在深色底上是"看不见" */
+  --fx-dot:     186, 197, 255;
+  --fx-link:    129, 140, 248;
+  --fx-burst-1: 129, 140, 248;
+  --fx-burst-2: 248, 113, 113;
+  --fx-burst-3: 52, 211, 153;
+  --fx-ring: 165, 180, 252;
+  /* 深色底上丝带本身偏暗，流动点用浅紫而不是纯白，避免"白点割裂" */
+  --fx-flow: #dbe3ff;
 }
 [data-theme="dark"] .statement table.tbl thead th { background: var(--surface-2); }
 [data-theme="dark"] .file-ext.txt { background: var(--surface-3); color: var(--ink-3); }
@@ -1879,16 +1940,57 @@ body {
   box-shadow: var(--sh-sm), 0 0 0 1px color-mix(in srgb, var(--ink) 3%, transparent);
   transition: box-shadow var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease), transform var(--dur-2) var(--ease);
 }
+/* 顶部品牌线：hover 时从中间向两端展开。
+   比"整条淡入"更利落——像精密仪器上的一条指示灯带，商务感来自"精确"而不是"发光"。 */
 .card::before {
   content: "";
-  position: absolute; inset: 0 0 auto 0; height: 1px;
+  position: absolute; inset: 0 0 auto 0; height: 2.5px;
   border-radius: inherit;
-  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--brand) 26%, transparent), transparent);
-  opacity: 0; transition: opacity var(--dur-2) var(--ease);
+  background: linear-gradient(90deg,
+    transparent,
+    color-mix(in srgb, var(--brand) 92%, transparent) 14%,
+    color-mix(in srgb, var(--brand) 92%, transparent) 86%,
+    transparent);
+  opacity: 0;
+  transform: scaleX(.18);
+  transform-origin: 50% 50%;
+  transition: transform var(--dur-3) var(--ease-standard), opacity var(--dur-1) linear;
   pointer-events: none;
 }
-.card:hover::before { opacity: 1; }
-.card.hover:hover { box-shadow: var(--sh-md), 0 0 0 1px color-mix(in srgb, var(--brand) 14%, transparent); }
+.card:hover::before { opacity: 1; transform: scaleX(1); }
+
+/* 所有卡片在悬停时都有"被选中"的反馈（不只是带 .hover 的可点卡）：
+   边框提亮 + 轻微加深的阴影，但不抬升——避免把纯展示卡伪装成按钮。 */
+@media (hover: hover) and (pointer: fine) {
+  .card:hover {
+    border-color: color-mix(in srgb, var(--brand) 26%, var(--line));
+    box-shadow: var(--sh-sm), 0 6px 18px -12px rgba(16, 24, 40, .35),
+                0 0 0 1px color-mix(in srgb, var(--brand) 12%, transparent);
+  }
+}
+.card.hover:hover {
+  border-color: color-mix(in srgb, var(--brand) 40%, var(--line));
+  box-shadow: var(--sh-md), 0 0 0 1px color-mix(in srgb, var(--brand) 22%, transparent);
+}
+
+/* 指标卡用同一条品牌线（hero 的 ::after 是装饰圆斑，必须排除） */
+.stat:not(.hero) { position: relative; }
+.stat:not(.hero)::after {
+  content: "";
+  position: absolute; inset: 0 0 auto 0; height: 2.5px;
+  border-radius: inherit;
+  background: linear-gradient(90deg,
+    transparent,
+    color-mix(in srgb, var(--brand) 92%, transparent) 14%,
+    color-mix(in srgb, var(--brand) 92%, transparent) 86%,
+    transparent);
+  opacity: 0;
+  transform: scaleX(.18);
+  transform-origin: 50% 50%;
+  transition: transform var(--dur-3) var(--ease-standard), opacity var(--dur-1) linear;
+  pointer-events: none;
+}
+.stat:not(.hero):hover::after { opacity: 1; transform: scaleX(1); }
 
 /* 卡片头：标题加粗、留白更从容 */
 .card-hd { padding-bottom: 12px; }
@@ -2147,3 +2249,939 @@ html[data-perf="low"] .nav-item.is-active::before { animation: none !important; 
   .content.is-entering table.tbl tbody tr:nth-child(n+5) { animation: none; }
   .card::before { transition: none; }
 }
+
+/* ============================================================================
+   v5.4 · 3D 动效体系
+
+   三层结构：
+     L0 三维氛围层  —— scene.js 的全局 WebGL 画布（单上下文，服务所有页面）
+     L1 空间容器层  —— .content 的 perspective + 卡片/按钮的 preserve-3d
+     L2 内容动效层  —— 每页一套入场族 + 行/图表/数字的次级动效
+
+   铁律（改之前先读）：
+     M1 倾斜角度上限 2deg、位移上限 4px。超过就"晃"，读数字会晕——这是可用性问题不是审美问题。
+     M2 所有时长必须走 --dur-* 令牌，否则设置页三档速度对它们无效。
+     M3 倾斜与位移一律包在 @media (hover:hover) and (pointer:fine) 里：触屏没有 hover，
+        挂上去只会变成"点一下卡住不动"的粘滞态。
+     M4 will-change 只在 hover 规则内声明，不要写进基础选择器——常驻 will-change 会让
+        每个卡片长期占一个合成层，页面滚动时反而更卡。
+   ========================================================================== */
+
+/* ---------- L0：全局 3D 背景层 ---------- */
+
+.scene-bg {
+  position: fixed; inset: 0; z-index: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity calc(var(--dur-4) * 2.2) var(--ease-standard);
+}
+/* 只在 WebGL 真正建起来后才淡入：失败时保持全透明，不留下死黑块 */
+html[data-scene-ready="1"] .scene-bg { opacity: .58; }
+html[data-theme="dark"][data-scene-ready="1"] .scene-bg { opacity: .46; }
+html[data-perf="low"] .scene-bg { display: none; }
+
+/* 内容层抬到画布之上；侧边栏与标头本身有不透明底色，天然遮住画布，
+   于是 3D 只从「内容区的空白处」透出来——正好是需要空间感的地方。 */
+.main > .content { position: relative; z-index: 1; }
+.sidebar { z-index: 3; }
+
+/* ---------- L1：空间容器 ---------- */
+
+/* perspective 挂在滚动容器上：所有子元素的 rotateX/Y 共用同一个视点，
+   卡片之间才有"同一空间里的一叠纸"的错觉，而不是各自为政。 */
+.content {
+  perspective: 1600px;
+  perspective-origin: 50% 22%;
+}
+
+/* 静态立体感：顶边 1px 内高光模拟"上方来光"，底部一道极淡接触阴影模拟"落在桌面上"。
+   没有这两层，卡片在浅色主题里就是一张贴纸；有了才有厚度。用 inset 而不是伪元素，
+   不占额外合成层。 */
+.card, .stat, .co-card, .plan-card {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .62),
+    0 1px 2px rgba(16, 24, 40, .05),
+    0 2px 6px -3px rgba(16, 24, 40, .06);
+}
+/* 品牌渐变卡本身够亮，再加白色高光会"过曝"，只留接触阴影 */
+.stat.hero {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .22),
+    0 2px 8px -3px rgba(16, 24, 40, .18);
+}
+html[data-theme="dark"] .card,
+html[data-theme="dark"] .stat,
+html[data-theme="dark"] .co-card,
+html[data-theme="dark"] .plan-card {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .07),
+    0 1px 2px rgba(0, 0, 0, .35),
+    0 3px 10px -4px rgba(0, 0, 0, .40);
+}
+
+/* 卡片默认不建 3D 上下文：只有真要倾斜的元素才需要 preserve-3d */
+.card, .stat, .co-card, .plan-card, .modal { transform-style: preserve-3d; }
+
+/* ---------- L1a：卡片悬停（倾斜 ≤ 1.6deg，位移 ≤ 3px） ---------- */
+
+@media (hover: hover) and (pointer: fine) {
+  .card.hover,
+  .stat.is-clickable,
+  .co-card,
+  .plan-card {
+    will-change: transform;
+    transition:
+      transform var(--dur-2) var(--ease-standard),
+      box-shadow var(--dur-2) var(--ease-standard),
+      border-color var(--dur-2) var(--ease-move);
+  }
+
+  /* 普通卡片：向后仰一点 + 右侧微微抬起，像被指尖挑起一角。
+     基础角只有 .6deg，剩下的角度由 fx.js 按指针在卡片内的位置补（±1.2deg），
+     相加后仍 ≤ 2deg（M1）。固定角+动态角，卡片才会"跟着手走"而不是"整块翻一下"。 */
+  .card.hover:hover {
+    transform: translate3d(0, -2px, 26px)
+               rotateX(calc(.6deg + var(--fx-rx, 0deg)))
+               rotateY(calc(-.7deg + var(--fx-ry, 0deg)));
+    box-shadow: var(--elev-lift), 0 0 0 1px var(--elev-rim);
+  }
+
+  /* 指标卡：可点击的才抬（不可点击的抬起来会骗人），力度比普通卡片略强 */
+  .stat.is-clickable:hover {
+    transform: translate3d(0, -3px, 32px)
+               rotateX(calc(.7deg + var(--fx-rx, 0deg)))
+               rotateY(calc(-.6deg + var(--fx-ry, 0deg)))
+               scale(1.012);
+    box-shadow: var(--elev-lift-strong), 0 0 0 1px var(--elev-rim);
+  }
+  /* 品牌渐变卡：保留色相阴影，换中性色会让它"掉光" */
+  .stat.hero.is-clickable:hover {
+    box-shadow: var(--elev-lift-strong), 0 0 0 1px var(--elev-rim),
+                0 22px 48px -18px color-mix(in srgb, var(--brand-600) 72%, transparent);
+  }
+  /* 公司卡片与方案卡 */
+  .co-card:hover,
+  .plan-card:hover {
+    transform: translate3d(0, -2px, 22px)
+               rotateX(calc(.5deg + var(--fx-rx, 0deg)))
+               rotateY(calc(-.6deg + var(--fx-ry, 0deg)));
+    box-shadow: var(--elev-lift), 0 0 0 1px var(--elev-rim);
+  }
+
+  /* 按下回落：抬起的反作用力，让点击"有重量" */
+  .card.hover:active,
+  .stat.is-clickable:active,
+  .co-card:active {
+    transform: translate3d(0, 0, 4px) scale(.995);
+    transition-duration: calc(var(--dur-1) * .6);
+  }
+}
+
+/* ---------- L1b：按钮 3D 抬升 + 光影 ---------- */
+
+.btn {
+  position: relative;
+  overflow: hidden;
+  /* 基础态就把 transform 的过渡写好，hover 时才有"抬起来"而不是"跳过去" */
+  transition:
+    background var(--dur-1) var(--ease-move),
+    border-color var(--dur-1) var(--ease-move),
+    color var(--dur-1) var(--ease-move),
+    box-shadow var(--dur-2) var(--ease-standard),
+    transform var(--dur-2) var(--ease-standard);
+}
+
+/* 主按钮的高光：一条斜向白光扫过。用伪元素而不是背景渐变，
+   这样扫动不触发重绘，只动合成层的 transform。 */
+.btn.primary::after {
+  content: '';
+  position: absolute; inset: -1px;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(105deg,
+    rgba(255, 255, 255, 0) 28%,
+    rgba(255, 255, 255, .38) 46%,
+    rgba(255, 255, 255, .10) 56%,
+    rgba(255, 255, 255, 0) 68%);
+  transform: translateX(-115%);
+  opacity: 0;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .btn:not(:disabled):hover {
+    /* fx.js 往 --fx-tx/--fx-ty 写 ±2px 的磁吸位移：按钮朝指针方向"迎"一下 */
+    transform: translate3d(var(--fx-tx, 0px), calc(-2px + var(--fx-ty, 0px)), 10px);
+    box-shadow:
+      0 10px 22px -10px rgba(16, 24, 40, .28),
+      0 3px 8px -4px rgba(16, 24, 40, .14);
+  }
+  /* 主按钮：品牌色投影 + 轻微放大，比次要按钮更有"要按下去"的吸引力 */
+  .btn.primary:not(:disabled):hover {
+    transform: translate3d(var(--fx-tx, 0px), calc(-2px + var(--fx-ty, 0px)), 12px) scale(1.018);
+    box-shadow:
+      0 12px 26px -10px color-mix(in srgb, var(--brand) 58%, transparent),
+      0 2px 6px -2px rgba(16, 24, 40, .16);
+  }
+  .btn.primary:not(:disabled):hover::after {
+    animation: btnSheen calc(var(--dur-4) * 1.9) var(--ease-move);
+  }
+  /* 次要 / 幽灵按钮：加一圈 1px 品牌描边，边界清楚才像"可点的控件" */
+  .btn.secondary:not(:disabled):hover,
+  .btn.ghost:not(:disabled):hover {
+    border-color: color-mix(in srgb, var(--brand) 42%, var(--line));
+    box-shadow:
+      0 8px 18px -10px rgba(16, 24, 40, .26),
+      0 0 0 1px color-mix(in srgb, var(--brand) 28%, transparent);
+  }
+  /* 图标按钮：小，抬升幅度也要小，否则会比旁边的文字按钮更抢眼 */
+  .icon-btn:not(:disabled):hover {
+    transform: translate3d(var(--fx-tx, 0px), calc(-1px + var(--fx-ty, 0px)), 6px);
+  }
+}
+
+/* 按下态必须压过 hover：`.btn.secondary:not(:disabled):hover` 是 (0,4,0)，
+   而 `.btn:not(:disabled):active` 只有 (0,3,0)——不提高一级会被 hover 的阴影盖掉，
+   表现为"按下去看不出变化"。这里用 .btn.btn 把特异性提到 (0,4,0)，并靠顺序取胜。 */
+.btn.btn:not(:disabled):active {
+  transform: translate3d(var(--fx-tx, 0px), calc(var(--fx-ty, 0px) + 1px), 1px) scale(.972);
+  transition-duration: calc(var(--dur-1) * .6);
+  /* 按下用内阴影：视觉上真的"陷进纸面"，比单纯缩小更明确 */
+  box-shadow: inset 0 2px 5px rgba(16, 24, 40, .2), 0 1px 2px rgba(16, 24, 40, .12);
+}
+.btn.btn.primary:not(:disabled):active {
+  box-shadow: inset 0 2px 6px rgba(15, 23, 42, .3), 0 1px 2px rgba(16, 24, 40, .16);
+}
+
+@keyframes btnSheen {
+  0%   { transform: translateX(-115%); opacity: 0; }
+  18%  { opacity: .9; }
+  100% { transform: translateX(115%); opacity: 0; }
+}
+
+/* 侧边栏导航项：悬停时整行向前浮起，箭头跟着走 */
+@media (hover: hover) and (pointer: fine) {
+  .nav-item { transition: transform var(--dur-2) var(--ease-standard), background var(--dur-1) var(--ease-move); }
+  .nav-item:hover { transform: translateX(2px); }
+  .nav-item:hover .nav-chev { transform: translateX(2px); }
+}
+
+/* ---------- L2：每页专属入场族 ---------- */
+
+/* 8 套语汇，按页面语义分配（见文件末尾的映射表）。
+   共同点：位移量 ≤ 18px、旋转 ≤ 4deg、时长 ≤ --dur-3，保证"一致但不雷同"。 */
+
+/* lift：从下方浮起，像卡片被托上来一层 */
+@keyframes vLift {
+  from { opacity: 0; transform: translate3d(0, 16px, -30px) rotateX(2.4deg); }
+  to   { opacity: 1; transform: none; }
+}
+/* slide：从右侧推入，视线顺着"新的东西从右边来"的直觉 */
+@keyframes vSlide {
+  from { opacity: 0; transform: translate3d(22px, 0, -16px) rotateY(-2.6deg); }
+  to   { opacity: 1; transform: none; }
+}
+/* slideL：从左侧推入（用于"回看类"页面，方向感与 slide 相反） */
+@keyframes vSlideL {
+  from { opacity: 0; transform: translate3d(-22px, 0, -16px) rotateY(2.6deg); }
+  to   { opacity: 1; transform: none; }
+}
+/* flip：像翻一张票据，绕上边缘倒下来 */
+@keyframes vFlip {
+  from { opacity: 0; transform: perspective(1200px) rotateX(-4.2deg) translate3d(0, -10px, -24px); transform-origin: 50% 0; }
+  to   { opacity: 1; transform: none; }
+}
+/* stack：自上落下并压平，适合"排队/清单"语义 */
+@keyframes vStack {
+  from { opacity: 0; transform: translate3d(0, -14px, -20px) scale(.994); }
+  to   { opacity: 1; transform: none; }
+}
+/* zoom：从深处放大到眼前，图表类页面用，配合数字滚动更有"数据浮出来"的感觉 */
+@keyframes vZoom {
+  from { opacity: 0; transform: scale(.972) translateZ(-26px); }
+  to   { opacity: 1; transform: none; }
+}
+/* unfold：自上而下展开，适合分组设置类 */
+@keyframes vUnfold {
+  from { opacity: 0; transform: translate3d(0, -8px, -12px) scaleY(.988); transform-origin: 50% 0; }
+  to   { opacity: 1; transform: none; }
+}
+/* drift：斜向轻飘，最弱的一档，用于"不需要强调"的辅助页 */
+@keyframes vDrift {
+  from { opacity: 0; transform: translate3d(8px, 10px, -14px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* 统一的下发规则：每族只改 animation 名，延迟与时长共用同一套节奏 */
+.content[data-view="dashboard"].is-entering > *,
+.content[data-view="group"].is-entering > *,
+.content[data-view="group-reports"].is-entering > * { animation-name: vLift; }
+
+.content[data-view="transactions"].is-entering > *,
+.content[data-view="vouchers"].is-entering > *,
+.content[data-view="logs"].is-entering > * { animation-name: vSlide; }
+
+.content[data-view="debts"].is-entering > *,
+.content[data-view="advances"].is-entering > *,
+.content[data-view="parties"].is-entering > * { animation-name: vSlideL; }
+
+.content[data-view="invoices"].is-entering > * { animation-name: vFlip; }
+
+.content[data-view="accounts"].is-entering > *,
+.content[data-view="companies"].is-entering > * { animation-name: vStack; }
+
+.content[data-view="reports"].is-entering > *,
+.content[data-view="budgets"].is-entering > * { animation-name: vZoom; }
+
+.content[data-view="settings"].is-entering > *,
+.content[data-view="categories"].is-entering > * { animation-name: vUnfold; }
+
+.content[data-view="users"].is-entering > *,
+.content[data-view="profile"].is-entering > *,
+.content[data-view="backup"].is-entering > *,
+.content[data-view="projects"].is-entering > * { animation-name: vDrift; }
+
+/* 时长：翻转与滑入需要多一点时间才不显仓促，其余沿用 --dur-3 */
+.content[data-view="invoices"].is-entering > *,
+.content[data-view="transactions"].is-entering > * {
+  animation-duration: calc(var(--dur-3) * 1.15);
+}
+
+/* 交错节奏：同一页内最多 6 个区块参与，间隔 18ms（比原来的 24ms 更连贯，
+   因为不同族的位移方向不同，间隔太大反而显得"一片一片地弹"。 */
+.content[data-view].is-entering > * { animation-duration: var(--dur-3); animation-timing-function: var(--ease-standard); animation-fill-mode: backwards; }
+.content[data-view].is-entering > *:nth-child(1) { animation-delay: 0ms; }
+.content[data-view].is-entering > *:nth-child(2) { animation-delay: 18ms; }
+.content[data-view].is-entering > *:nth-child(3) { animation-delay: 34ms; }
+.content[data-view].is-entering > *:nth-child(4) { animation-delay: 48ms; }
+.content[data-view].is-entering > *:nth-child(5) { animation-delay: 60ms; }
+.content[data-view].is-entering > *:nth-child(n+6) { animation-delay: 70ms; }
+
+/* hero 卡内含 WebGL 画布：位移会把画布拖进合成层逐帧重绘，只淡入不位移 */
+.content[data-view].is-entering > .stat.hero { animation-name: viewEnterFade; }
+
+/* ---------- L2a：页面内的次级动效 ---------- */
+
+/* 指标数字：切页时轻微上浮，配合数字滚动（已有 data-count 逻辑） */
+@keyframes numLift {
+  from { opacity: .55; transform: translateY(3px); }
+  to   { opacity: 1; transform: none; }
+}
+.content[data-view].is-entering .stat-value { animation: numLift var(--dur-2) var(--ease-standard) backwards; }
+
+/* 表格行：按页族给方向。流水/凭证类从右滑入，其他从下浮起 */
+@keyframes rowInR {
+  from { opacity: 0; transform: translateX(10px); }
+  to   { opacity: 1; transform: none; }
+}
+.content[data-view="transactions"].is-entering table.tbl tbody tr:nth-child(-n+8),
+.content[data-view="vouchers"].is-entering table.tbl tbody tr:nth-child(-n+8) {
+  animation: rowInR calc(190ms * var(--motion-scale)) var(--ease-standard) backwards;
+}
+
+/* 图表：环形图/趋势图从中心散开一点点，避免"硬出现" */
+@keyframes chartBloom {
+  from { opacity: 0; transform: scale(.985) translateZ(-8px); }
+  to   { opacity: 1; transform: none; }
+}
+.content[data-view].is-entering .chart svg,
+.content[data-view].is-entering .cf-table { animation: chartBloom var(--dur-3) var(--ease-standard) backwards; }
+
+/* 提示条：从左"抽"出来，比淡入更有点"出现了一个新消息"的感觉 */
+@keyframes alertSlide {
+  from { opacity: 0; transform: translateX(-10px) scaleX(.985); transform-origin: 0 50%; }
+  to   { opacity: 1; transform: none; }
+}
+.content[data-view].is-entering > .alert { animation: alertSlide var(--dur-2) var(--ease-standard) backwards; }
+
+/* ---------- L2b：弹窗与浮层的 3D 感 ---------- */
+
+/* 弹窗从"屏幕里"浮到眼前：比原来的纯缩放多一点纵深。
+   注意不能加 perspective 到 .modal 自身，否则内部滚动容器会被投影扭曲；
+   这里只在 keyframes 里用局部 perspective。 */
+@keyframes modalIn3D {
+  from { opacity: 0; transform: perspective(1400px) translate3d(0, 14px, -60px) rotateX(1.6deg) scale(.985); }
+  to   { opacity: 1; transform: none; }
+}
+/* 只在支持 3D 变换的桌面端替换；移动端沿用原来的 modalIn（位移更小、更省电） */
+@media (hover: hover) and (pointer: fine) {
+  .modal { animation: modalIn3D var(--dur-3) var(--ease-standard) backwards; }
+}
+
+/* ---------- L2c：窄屏导航修正（顺手修掉的既有缺陷） ---------- */
+
+/* 桌面端 .nav-group 是纵向列（分组内导航项上下排）。820px 段把 .sidebar/.sb-nav 改成了横向，
+   但没改 .nav-group 的方向，于是每个分组内部仍然纵向堆叠——实测侧边栏高达 194px，
+   占掉窄屏首屏四分之一。这里补上方向修正。 */
+@media (max-width: 820px) {
+  /* 侧边栏在窄屏变成一条横向工具带。必须显式定高：
+     里面装了公司切换器（.sb-company-wrap），它 flex:none 且自带下拉高度，
+     在 row 布局下会把整条撑到 194px——实测占掉首屏四分之一。 */
+  .sidebar { height: 58px; overflow: hidden; }
+  .sb-nav { height: 58px; align-items: center; }
+  .nav-group { flex-direction: row; height: 36px; }
+  .sb-company-wrap { max-height: 44px; }
+  /* 横向滚动条在触摸设备上不可见，给一点右侧留白提示"还能滑" */
+  .sb-nav::after { content: ""; flex: none; width: 8px; }
+}
+
+/* ---------- L3：移动端与降级 ---------- */
+
+/* 触屏：去掉一切透视倾斜。没有 hover，倾斜只会在 tap 后留下粘滞的怪角度 */
+@media (max-width: 820px), (pointer: coarse) {
+  .content { perspective: none; }
+  .card, .stat, .co-card, .plan-card { transform-style: flat; }
+  .card.hover:hover,
+  .stat.is-clickable:hover,
+  .co-card:hover,
+  .plan-card:hover,
+  .btn:not(:disabled):hover,
+  .icon-btn:not(:disabled):hover { transform: none; }
+  /* 移动端保留按下的反馈：手指按下去要有回应，只是不做抬起 */
+  .btn:not(:disabled):active { transform: scale(.975); }
+  .card.hover:active, .stat.is-clickable:active { transform: scale(.995); }
+  .content[data-view].is-entering > * { animation-duration: calc(var(--dur-2) * 1.1); }
+  /* 移动端不做位移入场的族，统一改成纯淡入：小屏上横向滑动容易被误读成"页面在动" */
+  .content[data-view="transactions"].is-entering > *,
+  .content[data-view="vouchers"].is-entering > *,
+  .content[data-view="logs"].is-entering > *,
+  .content[data-view="debts"].is-entering > *,
+  .content[data-view="advances"].is-entering > *,
+  .content[data-view="parties"].is-entering > * { animation-name: viewEnterFade; }
+}
+
+/* 流畅模式：不建 WebGL（scene.js 已保证），CSS 侧也不做倾斜 */
+html[data-perf="low"] .card.hover:hover,
+html[data-perf="low"] .stat.is-clickable:hover,
+html[data-perf="low"] .btn:not(:disabled):hover { transform: none; }
+html[data-perf="low"] .content { perspective: none; }
+
+/* 减少动效：全局已有 data-motion="off" 的兜底，这里额外关掉 3D 位移 */
+html[data-motion="off"] .card.hover:hover,
+html[data-motion="off"] .stat.is-clickable:hover,
+html[data-motion="off"] .btn:not(:disabled):hover { transform: none; }
+
+/* ============================================================================
+   v5.5 · 交互反馈层与深色主题可见性
+
+   问题：v5.4 的"浮起"全靠黑色投影表达。浅色底上是阴影，深色底上等于没有——
+   深色主题里 hover 只剩 1° 的倾斜，用户会觉得"点了没反应"。
+   解法：把"高度"拆成两个物理线索，深浅主题各用一套权重：
+     1) 外发光（深色主用，浅色轻用）—— 语义是"这件东西亮了"，在深底上最醒目；
+     2) 投影（浅色主用，深色弱用）—— 语义是"这件东西离开了桌面"。
+   + 卡片内的指针追光（两种主题都清晰，因为它画在卡片自己的底色上）。
+   ========================================================================== */
+
+/* ---------- 指针跟随的卡片追光 ---------- */
+/* 默认把渐变中心放在视口外，未 hover 时完全不可见，不额外增加"待机亮度"。
+   用 background-image 而不是伪元素：卡片上的 ::before（顶部高光）与
+   .stat::after（装饰圆斑）都已被占用，再加一层会和既有视觉打架。 */
+/* 用 :not(.hero) 而不是「先铺一层再给 hero 置 none」：
+   .stat.hero 的底座是 background 简写（linear-gradient），后置 background-image:none
+   会把那条渐变一起抹掉，hero 卡在浅色主题下会变成白底白字。 */
+.card, .stat:not(.hero), .co-card, .plan-card {
+  background-image: radial-gradient(
+    240px circle at var(--fx-mx, -400px) var(--fx-my, -400px),
+    var(--fx-spot), transparent 62%);
+}
+
+/* 指针进入卡片时把边框提亮一档，配合追光形成"被照亮"的整体感 */
+.card.is-fx-hover,
+.stat.is-fx-hover,
+.co-card.is-fx-hover,
+.plan-card.is-fx-hover {
+  border-color: var(--fx-rim);
+}
+
+/* ---------- 深色主题的 hover：光晕替代阴影 ---------- */
+/* 只覆盖深色：浅色主题的 --elev-lift 已经是合适的中性投影，不必二次声明。 */
+[data-theme="dark"] .card.hover:hover,
+[data-theme="dark"] .stat.is-clickable:hover,
+[data-theme="dark"] .co-card:hover,
+[data-theme="dark"] .plan-card:hover {
+  box-shadow: var(--elev-lift), 0 0 0 1px var(--elev-rim);
+}
+[data-theme="dark"] .stat.hero.is-clickable:hover {
+  box-shadow: var(--elev-lift-strong), 0 0 0 1px var(--elev-rim),
+              0 22px 48px -18px color-mix(in srgb, var(--brand-600) 82%, transparent);
+}
+/* 深色下按钮的投影也换成"底部暗影 + 品牌微光"，否则抬升完全看不出来 */
+[data-theme="dark"] .btn:not(:disabled):hover {
+  box-shadow:
+    0 10px 22px -12px rgba(0, 0, 0, .9),
+    0 0 0 1px color-mix(in srgb, var(--brand) 30%, transparent),
+    0 0 22px -8px color-mix(in srgb, var(--brand) 55%, transparent);
+}
+[data-theme="dark"] .btn.primary:not(:disabled):hover {
+  box-shadow:
+    0 12px 26px -10px color-mix(in srgb, var(--brand) 78%, transparent),
+    0 0 26px -6px color-mix(in srgb, var(--brand) 62%, transparent);
+}
+/* 卡片顶部那道 1px 高光：深色下品牌色 26% 太暗，提亮到 55% 才看得见 */
+[data-theme="dark"] .card::before {
+  background: linear-gradient(90deg, transparent,
+    color-mix(in srgb, var(--brand-600) 58%, transparent), transparent);
+}
+/* 深色下静态卡片的顶沿内高光也要加强（.07 在 #111a2b 上几乎为零）。
+   注意这里必须带 html 前缀：v5.4 那条静态阴影写的是 html[data-theme="dark"] .card，
+   特异性比 [data-theme="dark"] .card 高一级，少了 html 会静默失效。 */
+html[data-theme="dark"] .card,
+html[data-theme="dark"] .stat,
+html[data-theme="dark"] .co-card,
+html[data-theme="dark"] .plan-card {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .11),
+    0 1px 2px rgba(0, 0, 0, .42),
+    0 3px 10px -4px rgba(0, 0, 0, .52);
+}
+/* 深色下的普通卡片悬停：必须带 html 前缀才能压过静态阴影那条 (0,3,1)。
+   深色不用黑色投影，改用"提亮的顶沿 + 品牌描边 + 一圈很淡的外发光"。 */
+html[data-theme="dark"] .card:hover {
+  border-color: color-mix(in srgb, var(--brand) 40%, var(--line));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .14),
+    0 1px 2px rgba(0, 0, 0, .45),
+    0 10px 26px -16px rgba(0, 0, 0, .75),
+    0 0 0 1px color-mix(in srgb, var(--brand) 32%, transparent),
+    0 0 20px -8px color-mix(in srgb, var(--brand) 42%, transparent);
+}
+
+/* 品牌渐变卡自身够亮，内高光要比普通卡片强，但投影要弱（它本来就在视觉最前） */
+html[data-theme="dark"] .stat.hero {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .26),
+    0 2px 10px -3px rgba(0, 0, 0, .52);
+}
+
+/* ---------- FX 三层 ---------- */
+/* z 轴分配：field 2（内容之上、侧栏之下）→ aura 4 → burst 90（浮层之下）。
+   为什么不放内容之下：卡片是不透明的，放下面等于只剩页边缝能看见，等于没有。 */
+.fx-field, .fx-burst {
+  position: fixed; inset: 0;
+  pointer-events: none;
+  display: block;
+}
+.fx-field { z-index: 2; }
+.fx-burst { z-index: 90; }
+.fx-aura {
+  position: fixed; left: 0; top: 0;
+  /* 300px：大约是一张卡片的大小。520px 时整屏像蒙了一层紫雾，
+     指针走到哪都在"罩"内容，反而看不清字。 */
+  width: 300px; height: 300px;
+  margin: -150px 0 0 -150px;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 4;
+  opacity: 0;
+  transform: translate3d(var(--fx-x, -600px), var(--fx-y, -600px), 0);
+  background: radial-gradient(circle,
+    color-mix(in srgb, var(--brand) 24%, transparent) 0%,
+    color-mix(in srgb, var(--info) 12%, transparent) 42%,
+    transparent 70%);
+  transition: opacity var(--dur-3) var(--ease-move);
+  /* 深色底用 screen：光斑是"加光"；浅色底用 soft-light：不会把白底洗成灰 */
+  mix-blend-mode: screen;
+}
+[data-theme="light"] .fx-aura,
+[data-theme="blue"] .fx-aura,
+[data-theme="green"] .fx-aura {
+  mix-blend-mode: soft-light;
+  background: radial-gradient(circle,
+    color-mix(in srgb, var(--brand) 34%, transparent) 0%,
+    color-mix(in srgb, var(--info) 18%, transparent) 40%,
+    transparent 68%);
+}
+.fx-aura.is-live.is-on { opacity: .58; }
+[data-theme="dark"] .fx-aura.is-live.is-on { opacity: .72; }
+
+/* 关闭 / 降级：整层隐藏，不占绘制预算 */
+html[data-fx="off"] .fx-field,
+html[data-fx="off"] .fx-burst,
+html[data-fx="off"] .fx-aura,
+html[data-perf="low"] .fx-field,
+html[data-perf="low"] .fx-burst,
+html[data-perf="low"] .fx-aura,
+html[data-motion="off"] .fx-field,
+html[data-motion="off"] .fx-burst,
+html[data-motion="off"] .fx-aura {
+  display: none;
+}
+@media (hover: none), (pointer: coarse) {
+  .fx-field, .fx-burst, .fx-aura { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fx-field, .fx-burst, .fx-aura { display: none; }
+}
+@media print {
+  .fx-field, .fx-burst, .fx-aura { display: none !important; }
+}
+
+/* ============================================================================
+   集团资金看板
+   ========================================================================== */
+
+.fb-live-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 12px; margin: 0 0 var(--page-gap);
+  border: 1px solid var(--line); border-radius: var(--r);
+  background: var(--surface-2);
+  font-size: 12px; color: var(--muted);
+}
+.fb-live-bar strong { color: var(--ink-2); font-weight: 600; }
+.fb-live-bar .mono { color: var(--ink-2); }
+.fb-live-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--muted-2); flex: none;
+}
+.fb-live-dot.is-on {
+  background: var(--brand);
+  animation: fbPulse 2.2s var(--ease-move) infinite;
+}
+@keyframes fbPulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand) 52%, transparent); }
+  70%  { box-shadow: 0 0 0 6px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.fb-live-sep { color: var(--line-2); }
+.fb-live-gap { flex: 1 1 auto; }
+.fb-warn { color: var(--warn); display: inline-flex; align-items: center; gap: 4px; }
+
+/* 数据刷新时的一闪：告诉用户"这块刚变过"，但不用位移（位移会把正在读的行推开） */
+@keyframes fbFlash {
+  from { background-color: color-mix(in srgb, var(--brand) 10%, transparent); }
+  to   { background-color: transparent; }
+}
+.is-fb-flash { animation: fbFlash .72s var(--ease-move); border-radius: var(--r); }
+
+.fb-ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- 关系图 ---------- */
+.fb-graph { position: relative; min-width: 0; }
+.fb-svg {
+  display: block; width: 100%; height: auto;
+  /* 单列布局（平板/窄屏）时卡片会变很宽，SVG 按 100% 放大会把节点和字号一起放大，
+     看上去像"被裁了一刀"。给个上限并居中，图形尺寸与桌面双列时保持一致。 */
+  max-width: 760px; margin-inline: auto;
+  overflow: visible;
+  /* 深色主题下丝带与节点靠自身颜色发光，这里给整体一个极淡的色相底 */
+  color: var(--brand);
+}
+.fb-orbit {
+  fill: none; stroke: var(--line);
+  stroke-width: 1; stroke-dasharray: 2 8;
+  opacity: .9;
+}
+.fb-core { color: var(--brand); }
+
+.fb-edge-hit { fill: none; stroke: transparent; stroke-width: 20; }
+.fb-edge-line {
+  fill: none; stroke-linecap: round;
+  stroke: color-mix(in srgb, var(--brand) 58%, transparent);
+  transition: stroke var(--dur-1) var(--ease-move), stroke-opacity var(--dur-1) var(--ease-move);
+}
+.fb-edge-pay .fb-edge-line { stroke: color-mix(in srgb, var(--warn) 62%, transparent); }
+/* 丝带上流动的点：靠 stroke-dashoffset 位移，只动合成层，不触发 SVG 重排 */
+.fb-edge-flow {
+  fill: none; stroke-linecap: round;
+  stroke: var(--fx-flow);
+  stroke-dasharray: 2 15;
+  opacity: .85;
+  animation: fbFlow 2.4s linear infinite;
+}
+@keyframes fbFlow { from { stroke-dashoffset: 0; } to { stroke-dashoffset: -68; } }
+
+.fb-edge:hover .fb-edge-line {
+  stroke: color-mix(in srgb, var(--brand) 92%, transparent);
+  stroke-opacity: 1;
+}
+.fb-edge-pay:hover .fb-edge-line { stroke: var(--warn); }
+.fb-edge:hover .fb-edge-flow { opacity: 1; }
+
+.fb-node-halo {
+  fill: color-mix(in srgb, var(--c, var(--brand)) 14%, transparent);
+  /* SVG 元素的 transform-origin 默认是用户坐标原点，scale 会把圆"拉走" */
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: fbHalo 4s var(--ease-move) infinite;
+  animation-delay: calc(var(--i, 0) * -.7s);
+}
+@keyframes fbHalo {
+  0%, 100% { opacity: .55; transform: scale(1); }
+  50%      { opacity: .95; transform: scale(1.06); }
+}
+.fb-node-disc {
+  fill: color-mix(in srgb, var(--c, var(--brand)) 15%, var(--surface));
+  stroke: color-mix(in srgb, var(--c, var(--brand)) 68%, transparent);
+  stroke-width: 1.5;
+}
+.fb-node-amt {
+  fill: var(--ink); font-size: 12px; font-weight: 650;
+  text-anchor: middle; font-variant-numeric: tabular-nums;
+  letter-spacing: -.02em;
+}
+.fb-node-name { fill: var(--ink-2); font-size: 13px; font-weight: 620; }
+.fb-node-net { font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.fb-node-net.fb-in { fill: var(--in); }
+.fb-node-net.fb-out { fill: var(--out); }
+.fb-node-net.fb-flat { fill: var(--muted-2); }
+
+.fb-legend {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  margin-top: 4px; font-size: 11.5px; color: var(--muted-2);
+}
+.fb-lg-note { flex: 1 0 100%; color: var(--muted-2); }
+.fb-legend i {
+  display: inline-block; width: 16px; height: 3px; border-radius: 2px;
+  vertical-align: middle; margin-right: 6px;
+}
+.fb-lg-move { background: color-mix(in srgb, var(--brand) 62%, transparent); }
+.fb-lg-pay  { background: color-mix(in srgb, var(--warn) 66%, transparent); }
+.fb-lg-dot  { background: repeating-linear-gradient(90deg, var(--muted-2) 0 2px, transparent 2px 5px); }
+
+.fb-hint { font-size: 11.5px; color: var(--muted-2); }
+.fb-noflow {
+  margin-top: 8px; padding: 8px 10px;
+  border-radius: 8px; background: var(--warn-soft);
+  color: var(--ink-2); font-size: 12px;
+  display: flex; align-items: center; gap: 6px;
+}
+.fb-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; min-height: 260px; padding: 24px; text-align: center;
+  color: var(--muted-2);
+}
+.fb-empty strong { color: var(--ink-2); font-size: 13.5px; }
+.fb-empty p { font-size: 12px; line-height: 1.7; }
+.fb-empty.sm { min-height: 120px; }
+
+/* ---------- 净流向排行 ---------- */
+.fb-rank-head {
+  display: grid; grid-template-columns: minmax(0, 1fr) 78px 74px;
+  gap: 8px; padding: 0 0 7px;
+  font-size: 11px; color: var(--muted-2);
+  border-bottom: 1px solid var(--line);
+}
+.fb-rank-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) 78px 74px;
+  gap: 8px; align-items: center;
+  padding: 7px 0 9px;
+}
+.fb-rank-name { display: flex; align-items: center; gap: 6px; font-size: 12.5px; min-width: 0; }
+.fb-rank-net { font-size: 12.5px; font-weight: 620; text-align: right; font-variant-numeric: tabular-nums; }
+.fb-rank-net.in { color: var(--in); }
+.fb-rank-net.out { color: var(--out); }
+.fb-rank-net.flat { color: var(--muted-2); }
+.fb-rank-bal { font-size: 11.5px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.fb-rank-track {
+  grid-column: 1 / -1;
+  position: relative; height: 6px; border-radius: 3px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+/* 中轴线：净流入向右长、净流出向左长，两边共用同一根基线才可比 */
+.fb-rank-track::before {
+  content: ""; position: absolute; left: 50%; top: 0; bottom: 0;
+  width: 1px; background: var(--line-2);
+}
+.fb-rank-track i {
+  position: absolute; top: 0; bottom: 0; border-radius: 3px;
+  transition: width var(--dur-3) var(--ease-standard);
+}
+.fb-bar-in  { left: 50%;  width: var(--w); background: color-mix(in srgb, var(--in) 72%, transparent); }
+.fb-bar-out { right: 50%; width: var(--w); background: color-mix(in srgb, var(--out) 72%, transparent); }
+.fb-bar-flat { left: 50%; width: 0; }
+.fb-rank-foot { margin-top: 10px; font-size: 11px; color: var(--muted-2); line-height: 1.6; }
+
+/* ---------- 明细表 ---------- */
+.fb-pair { display: inline-flex; align-items: center; gap: 6px; }
+.fb-arrow { display: inline-flex; color: var(--muted-2); margin: 0 1px; }
+.fb-share { display: grid; grid-template-columns: minmax(0, 1fr) 42px; gap: 8px; align-items: center; }
+.fb-share-track { height: 5px; border-radius: 3px; background: var(--surface-3); overflow: hidden; }
+.fb-share-track i { display: block; height: 100%; background: color-mix(in srgb, var(--brand) 62%, transparent); border-radius: 3px; }
+.fb-share span { font-size: 11px; color: var(--muted-2); text-align: right; font-variant-numeric: tabular-nums; }
+.fb-table tfoot td {
+  font-weight: 650; color: var(--ink-2);
+  border-top: 1px solid var(--line-2);
+  background: var(--surface-2);
+}
+
+/* 动效关闭 / 低配：停掉丝带流动与节点呼吸，静态图仍然可读 */
+html[data-motion="off"] .fb-edge-flow,
+html[data-motion="off"] .fb-node-halo,
+html[data-motion="off"] .fb-live-dot.is-on,
+html[data-perf="low"] .fb-edge-flow,
+html[data-perf="low"] .fb-node-halo,
+html[data-perf="low"] .fb-live-dot.is-on { animation: none; }
+html[data-motion="off"] .is-fb-flash { animation: none; }
+
+/* 排行卡底部的时间线：把右侧卡片的高度补齐，同时回答「最近发生了什么」 */
+.fb-recent { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.fb-recent-hd { font-size: 11.5px; color: var(--muted-2); margin-bottom: 8px; }
+.fb-recent-row {
+  display: grid; grid-template-columns: 44px minmax(0, 1fr) auto;
+  gap: 8px; align-items: center;
+  padding: 5px 0; font-size: 12px; color: var(--ink-2);
+}
+.fb-recent-row + .fb-recent-row { border-top: 1px dashed var(--line); }
+.fb-recent-date { font-size: 11px; color: var(--muted-2); }
+.fb-recent-row b { font-weight: 620; color: var(--ink); text-align: right; }
+.fb-recent-row .fb-arrow { vertical-align: -1px; }
+
+/* 手机上顶栏只留主操作：报表在导航里已有一份，重复一次会把右侧用户菜单挤出屏幕 */
+@media (max-width: 480px) {
+  .tb-right .btn.secondary { display: none; }
+}
+
+/* 手机上圆环会被压到 330px 宽，字号跟着缩到 6px 没法读。
+   给 SVG 一个 520px 的下限并让容器横向滚动：宁可滑一下，也不要给出看不清的图。 */
+@media (max-width: 560px) {
+  .fb-graph { overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; }
+  .fb-svg { min-width: 520px; }
+  /* 卡片头右侧的提示在 390px 宽下会被挤成两行，纯装饰信息，窄屏直接收起 */
+  .fb-hint { display: none; }
+  .fb-graph::after {
+    content: "左右滑动查看完整关系图";
+    position: sticky; left: 0; display: block;
+    margin-top: 6px; font-size: 11px; color: var(--muted-2);
+  }
+}
+
+/* ============================================================================
+   v5.5 · 看板信息增强与下钻（第二轮）
+   ========================================================================== */
+
+/* 指标卡可点：标签后跟一个箭头，hover 时右移并加深——不改变卡片高度 */
+.fb-card-link { cursor: pointer; }
+.fb-more {
+  display: inline-flex; align-items: center;
+  margin-left: 2px; vertical-align: -1px;
+  color: currentColor; opacity: .45;
+  transition: opacity var(--dur-1) var(--ease-move), transform var(--dur-1) var(--ease-move);
+}
+.fb-card-link:hover .fb-more { opacity: 1; transform: translateX(2px); }
+
+/* 行级可点（排行 / 最近流向 / 明细表） */
+.fb-row-link { cursor: pointer; }
+.fb-rank-row.fb-row-link { border-radius: 8px; transition: background var(--dur-1) var(--ease-move); }
+.fb-rank-row.fb-row-link:hover { background: color-mix(in srgb, var(--brand) 6%, transparent); }
+.fb-recent-row.fb-row-link { border-radius: 6px; transition: background var(--dur-1) var(--ease-move), color var(--dur-1); }
+.fb-recent-row.fb-row-link:hover { background: color-mix(in srgb, var(--brand) 6%, transparent); }
+tr.fb-row-link:hover > td { background: color-mix(in srgb, var(--brand) 5%, transparent); }
+tr.fb-row-link:hover .fb-go { opacity: 1; }
+.fb-go {
+  display: inline-flex; align-items: center; gap: 2px;
+  font-size: 11.5px; color: var(--brand); opacity: .5;
+  transition: opacity var(--dur-1) var(--ease-move);
+}
+
+/* 关系图的丝带与节点：手型光标 + 悬停加亮（SVG 上同样生效） */
+.fb-edge, .fb-node, .fb-seg { cursor: pointer; }
+.fb-node:hover .fb-node-disc { stroke-width: 2.4; }
+.fb-node:hover .fb-node-name { fill: var(--ink); }
+
+/* ---------- 近 6 个月趋势 ---------- */
+.fb-trend {
+  display: flex; align-items: flex-end; gap: 10px;
+  height: 196px; padding: 4px 2px 0;
+}
+.fb-trend-col {
+  flex: 1 1 0; min-width: 0; height: 100%;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 0; border: 0; background: none; cursor: pointer;
+}
+.fb-trend-bar {
+  flex: 1 1 auto; width: 100%; max-width: 46px;
+  /* 不画整条底轨：0 值的月份画成一根满高灰柱，会被误读成"这个月很多" */
+  display: flex; flex-direction: column; justify-content: flex-end;
+  border-radius: 8px 8px 3px 3px; overflow: hidden;
+  transition: filter var(--dur-1) var(--ease-move);
+}
+.fb-trend-bar i { display: block; width: 100%; }
+.fb-trend-bar .move {
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--brand) 86%, transparent),
+    color-mix(in srgb, var(--brand) 52%, transparent));
+}
+.fb-trend-bar .pay {
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--warn) 88%, transparent),
+    color-mix(in srgb, var(--warn) 56%, transparent));
+}
+.fb-trend-col:hover .fb-trend-bar { filter: brightness(1.08); }
+.fb-trend-lb { font-size: 11px; color: var(--muted-2); }
+.fb-trend-col:hover .fb-trend-lb { color: var(--ink-2); }
+
+/* ---------- 各公司资金分布 ---------- */
+.fb-donut-wrap { display: flex; align-items: center; gap: 18px; }
+.fb-donut { position: relative; flex: none; width: 168px; height: 168px; }
+.fb-seg {
+  transition: stroke-width var(--dur-1) var(--ease-move), opacity var(--dur-1) var(--ease-move);
+}
+.fb-donut:hover .fb-seg { opacity: .42; }
+.fb-donut .fb-seg:hover { stroke-width: 23; opacity: 1; }
+.fb-donut-center {
+  position: absolute; inset: 0; pointer-events: none;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+}
+.fb-donut-center span { font-size: 10.5px; color: var(--muted-2); }
+.fb-donut-center b { font-size: 14.5px; font-weight: 650; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.fb-donut-legend { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.fb-dl-row {
+  display: grid; grid-template-columns: 8px minmax(0, 1fr) auto;
+  gap: 8px; align-items: center;
+  padding: 5px 6px; border-radius: 7px; font-size: 12px;
+  transition: background var(--dur-1) var(--ease-move);
+}
+.fb-dl-row:hover { background: var(--surface-2); }
+.fb-dl-row b { font-weight: 620; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+
+/* 明细页的公司名按钮 */
+.fb-co-link {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 5px; margin: -2px -5px;
+  border-radius: 7px; font-size: 12.5px; color: var(--ink-2);
+  transition: background var(--dur-1) var(--ease-move), color var(--dur-1) var(--ease-move);
+}
+.fb-co-link:hover { background: var(--brand-soft); color: var(--brand); }
+
+/* 从流水跳票据时高亮目标行 */
+@keyframes rowFocus {
+  from { background: color-mix(in srgb, var(--brand) 20%, transparent); }
+  to   { background: transparent; }
+}
+.is-focus-row > td { animation: rowFocus 1.9s var(--ease-move); }
+
+@media (max-width: 560px) {
+  .fb-donut-wrap { flex-direction: column; gap: 12px; }
+  .fb-donut-legend { width: 100%; }
+  .fb-trend { height: 168px; gap: 6px; }
+}
+html[data-motion="off"] .fb-trend-bar i,
+html[data-motion="off"] .fb-seg { transition: none; }
+
+/* ============================================================================
+   v5.5.5 · 设置页「更新历史」卡片
+   ========================================================================== */
+.changelog {
+  display: flex; flex-direction: column;
+  max-height: 420px; overflow-y: auto;
+  padding-right: 4px;
+}
+.changelog:not(.is-open) .cl-item:not(.is-latest) { display: none; }
+.cl-item {
+  display: grid; grid-template-columns: 64px minmax(0, 1fr);
+  gap: 12px; padding: 12px 8px;
+}
+.cl-item + .cl-item { border-top: 1px solid var(--line); }
+.cl-ver {
+  font-size: 13px; font-weight: 680; color: var(--brand);
+  font-variant-numeric: tabular-nums; white-space: nowrap; padding-top: 2px;
+}
+.cl-item.is-latest .cl-ver { color: var(--brand); }
+.cl-body { min-width: 0; }
+.cl-date { font-size: 11px; color: var(--muted-2); margin-bottom: 4px; }
+.cl-body ul { margin: 0; padding-left: 16px; }
+.cl-body li { font-size: 12.5px; color: var(--ink-3); line-height: 1.7; }
+.cl-body li + li { margin-top: 1px; }
+.changelog::-webkit-scrollbar { width: 6px; }
+.changelog::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 3px; }

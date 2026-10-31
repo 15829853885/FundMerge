@@ -11,6 +11,7 @@ const NAV = [
   {
     group: '集团', multi: true, items: [
       { view: 'group', label: '集团总览', icon: 'layers' },
+      { view: 'flowboard', label: '资金看板', icon: 'flow' },
       { view: 'group-reports', label: '集团报表', icon: 'report' }
     ]
   },
@@ -48,10 +49,12 @@ const NAV = [
   }
 ];
 
-const GROUP_VIEWS = ['group', 'group-reports'];
+const GROUP_VIEWS = ['group', 'flowboard', 'group-reports'];
 
 const VIEW_META = {
   group: ['集团总览', '所有公司资金一览'],
+  flowboard: ['集团资金看板', '集团内资金流向 · 每 5 秒自动刷新'],
+  'flow-detail': ['流向明细', '看板下钻 · 逐笔流水'],
   'group-reports': ['集团报表', '合并现金流量与资金汇总'],
   dashboard: ['公司总览', ''],
   transactions: ['资金流水', ''],
@@ -189,6 +192,8 @@ function renderShell() {
     </aside>
 
     <main class="main">
+      <!-- 全局 3D 背景层：单 WebGL 上下文，切页只换几何体（scene.js） -->
+      <canvas class="scene-bg" data-scene-global aria-hidden="true"></canvas>
       <header class="topbar">
         <div class="tb-left">
           <h1 class="tb-title" id="page-title">${meta[0]}</h1>
@@ -280,6 +285,8 @@ function renderView() {
   let html = '';
   switch (UI.view) {
     case 'group': html = viewGroupDashboard(); break;
+    case 'flowboard': html = viewFlowBoard(); break;
+    case 'flow-detail': html = viewFlowDetail(); break;
     case 'group-reports': html = viewGroupReports(); break;
     case 'dashboard': html = viewDashboard(); break;
     case 'transactions': html = viewTransactions(); break;
@@ -326,12 +333,14 @@ function renderView() {
   const pending = DB.users.find(u => u.builtin && u.mustSetPassword);
   if (pending) {
     root.innerHTML = firstRunHTML(pending);
-    if (window.Scene3D) Scene3D.mount(root);
+    root.dataset.view = 'firstrun';
+    if (window.FlowBoard) FlowBoard.stop();
+    if (window.Scene3D) { Scene3D.setView(UI.view); Scene3D.mount(root); }
     bindFirstRun();
     return;
   }
 
-  if (window.Scene3D) Scene3D.mount(root);
+  if (window.Scene3D) { Scene3D.setView(UI.view); Scene3D.mount(root); }
 
   /* 数据质量提示：缺汇率（REQ-22：绝不按 1:1 静默折算）、孤儿流水、被跳过的流水 */
   try {
@@ -366,7 +375,11 @@ function renderView() {
     : meta[0];
   if (subEl) {
     let sub = meta[1];
-    if (isGroupView()) sub = `${DB.companies.length} 家公司 · 合并口径`;
+    if (UI.view === 'flowboard') {
+      const w = fbWindow();
+      sub = `${DB.companies.length} 家公司 · ${w.label}${w.from ? ` ${w.from} 起` : ''} · 每 5 秒自动刷新`;
+    }
+    else if (isGroupView()) sub = `${DB.companies.length} 家公司 · 合并口径`;
     else if (UI.view === 'dashboard') sub = `${COMPANY.name} · 资金全景`;
     else if (UI.view === 'transactions') sub = `${COMPANY.name} · 共 ${DB.transactions.length} 笔`;
     else if (UI.view === 'accounts') sub = `${COMPANY.name} · ${DB.accounts.length} 个账户`;
@@ -385,6 +398,8 @@ function renderView() {
   animateView(root);
   runCounters(root);
   initCharts(root);
+  /* 看板的实时刷新只在本页挂载期间运行；切走必须停表，否则后台每 5 秒空转一次全量聚合 */
+  if (window.FlowBoard) { if (UI.view === 'flowboard') FlowBoard.start(); else FlowBoard.stop(); }
   if (UI.view === 'profile') setTimeout(() => refreshFileStats(false), 40);
 }
 
@@ -417,6 +432,8 @@ async function refreshFileStats(manual) {
 /* 页面切换入场动效：只在「视图/公司」真正变化时触发，数据刷新不重放 */
 let lastViewKey = '';
 function animateView(root) {
+  /* 动效族靠 data-view 选择：每个页面的入场/悬停语汇不同（见 styles.css 的 [data-view] 段） */
+  root.dataset.view = UI.view || 'default';
   if (perfLow()) return;                 /* 流畅模式不做入场动画，省掉一次强制重排 */
   const key = UI.view + '|' + (COMPANY ? COMPANY.id : '');
   if (key === lastViewKey) return;
@@ -490,6 +507,7 @@ const rawLoginRole = username => {
 
 function renderAuth(mode) {
   SESSION = null;
+  if (window.FlowBoard) FlowBoard.stop();   /* 否则退出登录后看板还会每 5 秒算一次 */
   document.body.style.overflow = '';
   /* localStorage 在受限存储/隐私模式下可能直接抛异常，未捕获会让整个登录页白屏 */
   let remembered = '';
@@ -956,6 +974,22 @@ function setMotionSpeed(s) {
   toast('动效速度：' + ({ slow: '慢', normal: '标准', fast: '快' }[s] || '标准'), 'ok');
 }
 
+/* ---------- 交互反馈偏好（鼠标光效 / 粒子层） ----------
+   与「页面动效」分开：动效开关是"要不要动"，这里是"要不要跟着鼠标动"。
+   关掉后页面入场/过渡照常，只是不再有跟随光斑、卡片追光、粒子与点击迸发。
+   低配机与减少动效偏好由 fx.js 自己再兜一层，不依赖这个开关。 */
+const fxOn = () => localStorage.getItem('fm-fx') !== 'off';
+function applyFX() {
+  document.documentElement.setAttribute('data-fx', fxOn() ? 'on' : 'off');
+  if (window.FX && window.FX.refreshPrefs) window.FX.refreshPrefs();
+}
+function setFX(on) {
+  localStorage.setItem('fm-fx', on ? 'on' : 'off');
+  applyFX();
+  renderView();
+  toast(on ? '已开启交互反馈（鼠标光效与粒子）' : '已关闭交互反馈', 'ok');
+}
+
 /* ---------- 流畅模式（性能档位） ----------
    背景：装饰性动效（3D 氛围层、入场淡入、悬停阴影）在显卡合成不可用时会被迫走软件渲染，
    表现为「动一下卡一下」。这里做三档：
@@ -1253,6 +1287,7 @@ document.addEventListener('change', e => {
   const el = e.target.closest('[data-action]');
   if (!el || el.tagName !== 'INPUT' || el.type !== 'checkbox') return;
   if (el.dataset.action === 'toggle-motion') setMotion(el.checked);
+  if (el.dataset.action === 'toggle-fx') setFX(el.checked);
 });
 
 /* 可访问性增强：重绘后调用，幂等、不动布局、不改视觉
@@ -1363,7 +1398,11 @@ document.addEventListener('click', async e => {
     }
     case 'close-modal': closeModal(); break;
     case 'confirm-ok':
-      if (typeof confirmHandler === 'function') { const fn = confirmHandler; confirmHandler = null; fn(); }
+      if (typeof confirmHandler === 'function') {
+        const fn = confirmHandler; confirmHandler = null;
+        closeModalNow();   /* 先同步摘掉确认框，再执行回调，回调里的 closeModal() 才能关到底层表单 */
+        fn();
+      }
       break;
 
     /* 流水 */
@@ -1383,11 +1422,18 @@ document.addEventListener('click', async e => {
       openTxModal();
       break;
     }
-    case 'edit-tx': openTxModal(id); break;
+    case 'edit-tx': {
+      const et = DB.transactions.find(x => x.id === id);
+      /* 票据自动分录：金额与状态由票据决定，必须回票据页处理 */
+      if (et && isInvoiceTx(et)) return toast('票据自动生成的流水不能直接编辑，请到「票据未回」页处理', 'err');
+      openTxModal(id);
+      break;
+    }
     case 'del-tx': {
       if (!isAdmin()) return toast('仅管理员可删除流水', 'err');
       const t = DB.transactions.find(x => x.id === id);
       if (!t) break;
+      if (isInvoiceTx(t)) return toast('票据自动生成的流水不能直接删除，请到「票据未回」页撤销报账或删除票据', 'err');
       confirmDialog({
         title: '删除这笔流水？',
         requireCode: true,
@@ -1425,6 +1471,7 @@ document.addEventListener('click', async e => {
     case 'del-acc': {
       const a = accById(id);
       if (!a) break;
+      if (isSystemAcc(a)) { toast('系统账户由票据自动维护，不能删除', 'err'); break; }
       if (DB.transactions.some(t => t.accountId === a.id || t.toAccountId === a.id)) {
         toast('该账户已有流水，不能删除，可改为停用', 'err');
         break;
@@ -1752,6 +1799,54 @@ document.addEventListener('click', async e => {
       renderView();
       break;
     }
+
+    /* ---------- 集团资金看板 ---------- */
+    /* 看板上任何一块的点击都收敛到这里：写筛选条件 → 跳「流向明细」。
+       scope 决定看什么：all（全部）/ kind（转账或代付）/ edge（某一组）/ company（某家公司）/ month（某个月）。 */
+    case 'fb-open': {
+      UI.flowDetail = {
+        scope: el.dataset.scope || 'all',
+        from: el.dataset.from || '',
+        to: el.dataset.to || '',
+        company: el.dataset.id || '',
+        month: el.dataset.month || '',
+        kind: el.dataset.kind || ''
+      };
+      UI.pages['fbdetail'] = 1;
+      UI.view = 'flow-detail';
+      renderView();
+      break;
+    }
+    case 'fb-preset': {
+      UI.fbPreset = el.dataset.preset || 'year';
+      renderView();
+      break;
+    }
+    case 'fb-refresh':
+      if (window.FlowBoard) FlowBoard.refresh();
+      toast('看板已刷新', 'ok');
+      break;
+    case 'fb-toggle-live':
+      if (window.FlowBoard) FlowBoard.toggle();
+      break;
+
+    /* 流水里的「票据自动」分录 → 跳回票据页并定位到那张票 */
+    case 'go-invoice': {
+      const inv = ensureInvoiceList(COMPANY).find(x => x.id === id);
+      if (!inv) return toast('原票据已不存在（可能已删除）', 'err');
+      const fs = ledgerState('invoice');
+      fs.from = ''; fs.to = ''; fs.status = ''; fs.form = ''; fs.overdue = '';
+      fs.kw = inv.number || inv.party || '';
+      fs.page = 1;
+      UI.invoiceFocus = id;
+      UI.view = 'invoices';
+      renderView();
+      setTimeout(() => {
+        const row = document.querySelector('[data-inv-row="' + id + '"]');
+        if (row) row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      }, 80);
+      break;
+    }
     case 'print': window.print(); break;
 
     /* 用户 */
@@ -1789,6 +1884,7 @@ document.addEventListener('click', async e => {
     }
     case 'fx-add': openFxModal(el.dataset.cur); break;
     case 'toggle-motion': setMotion(el.checked); break;
+    case 'toggle-fx': setFX(el.checked); break;
     case 'drill': UI.drillMetric = el.dataset.metric || 'total'; UI.view = 'drill'; renderView(); break;
     case 'drill-back': UI.view = 'group'; renderView(); break;
     /* 趋势区间：快捷天数（REQ-04/09，此前这个 action 根本没有监听，按钮是死的） */
@@ -1804,8 +1900,20 @@ document.addEventListener('click', async e => {
       DB.meta.activeCompanyId = co.id;
       COMPANY = co;
       saveDB();
-      /* 按来源指标预置流水筛选，否则进去看到的是全部流水，对不上数 */
+      /* 按来源指标决定"去哪"：
+         往来类指标（净额 / 应收 / 应付）落到「往来款」——流水页里根本看不到借出借入的余额；
+         其余落到资金流水，并预置区间与类型，否则进去看到的是全部流水，对不上数。 */
       const m = el.dataset.metric || UI.drillMetric || 'total';
+      if (m === 'net' || m === 'lend' || m === 'pay') {
+        if (m === 'lend') UI.debtTab = 'lend';
+        else if (m === 'pay') UI.debtTab = 'borrow';
+        const fs = ledgerState('debt');
+        fs.from = ''; fs.to = ''; fs.status = ''; fs.form = ''; fs.kw = ''; fs.overdue = ''; fs.page = 1;
+        UI.view = 'debts';
+        renderView();
+        toast('已进入 ' + co.name + ' 的往来款', 'ok');
+        break;
+      }
       const today = todayISO();
       const thisM = monthOf(today);
       const base = { from: '', to: '', account: '', type: '', category: '', keyword: '', page: 1 };
@@ -1815,6 +1923,32 @@ document.addEventListener('click', async e => {
       UI.view = 'transactions';
       renderView();
       toast('已进入 ' + co.name + ' 的资金流水', 'ok');
+      break;
+    }
+    /* 集团总览的洞察卡（逾期 / 超预算 / 负余额）：
+       之前统一走 nav，只换页面不换公司 → 集团里有 A、B 两家时，
+       用户停在 A 却看到"B 有 3 笔逾期"，点进去当然是空的。
+       现在先切到"出问题的那家公司"，再带上筛选条件进入。 */
+    case 'insight-go': {
+      const co = el.dataset.company ? coById(el.dataset.company) : null;
+      if (co && co.id !== COMPANY.id) {
+        if (!canAccessCompany(co.id)) return toast('没有该公司的访问权限', 'err');
+        switchCompany(co.id);
+      }
+      const view = el.dataset.view || 'debts';
+      if (view === 'debts') {
+        /* 页签跟着"最急的类型"走，否则会停在默认的借出款，把借入/未报销的逾期藏起来 */
+        if (el.dataset.tab) UI.debtTab = el.dataset.tab;
+        const fs = ledgerState('debt');
+        fs.from = ''; fs.to = ''; fs.status = ''; fs.form = ''; fs.kw = '';
+        fs.overdue = el.dataset.overdue ? '1' : '';
+        fs.page = 1;
+      } else if (view === 'budgets' && el.dataset.month) {
+        UI.budgetMonth = el.dataset.month;
+      }
+      UI.view = view;
+      renderView();
+      if (co) toast(`已切换到 ${co.name}${view === 'debts' && el.dataset.overdue ? ' · 只看逾期' : ''}`, 'ok');
       break;
     }
     /* 总览指标卡穿透：跳台账/流水并预置筛选（G-01） */
@@ -1881,7 +2015,7 @@ document.addEventListener('click', async e => {
     /* 台账筛选：清空 / 卡片快捷筛选 / 翻页（G-04） */
     case 'f-clear': {
       const st = ledgerState(el.dataset.f);
-      Object.assign(st, { from: '', to: '', status: '', kw: '', overdue: '', page: 1 });
+      Object.assign(st, { from: '', to: '', status: '', form: '', kw: '', overdue: '', page: 1 });
       renderView();
       break;
     }
@@ -1907,9 +2041,9 @@ document.addEventListener('click', async e => {
     case 'undo-advance': undoAdvanceDraw(id); break;
     /* 资金对账单的组成项穿透（REQ-20） */
     case 'fundstmt-go': {
-      const to = el.dataset.to, status = el.dataset.status || '';
+      const to = el.dataset.to, status = el.dataset.status || '', form = el.dataset.form || '';
       if (to === 'invoices') {
-        Object.assign(ledgerState('invoice'), { from: '', to: '', status, kw: '', overdue: '', page: 1 });
+        Object.assign(ledgerState('invoice'), { from: '', to: '', status, form, kw: '', overdue: '', page: 1 });
         UI.view = 'invoices';
       } else if (to === 'debts') {
         UI.debtTab = el.dataset.tab || 'borrow';
@@ -2155,13 +2289,47 @@ document.addEventListener('click', async e => {
     case 'del-invoice': {
       const inv = ensureInvoiceList(COMPANY).find(x => x.id === id);
       if (!inv) break;
+      /* 已报账的票据已经进过报表，不允许直接删：先撤销报账再删 */
+      if (inv.form === 'reported') {
+        toast('该票据已报账，请先「撤销报账」再删除', 'err');
+        break;
+      }
       confirmDialog({
-        title: '删除票据记录？', message: '将删除「<b>' + esc(inv.party) + '</b>」的票据记录。',
+        title: '删除票据记录？',
+        message: '将删除「<b>' + esc(inv.party) + '</b>」的票据记录，并冲销它产生的全部流水（付款、回票转入）。',
         confirmText: '删除', requireCode: true,
         onConfirm: () => {
-          logAction('删除', { module: '档案', target: '票据 ' + inv.party, targetId: id });
+          const undone = removeInvoicePostings(inv);
+          logAction('删除', {
+            module: '档案', target: '票据 ' + inv.party, targetId: id,
+            before: `形态 ${INVOICE_FORM[inv.form] || '未报账'}，关联流水 ${undone} 笔`, after: ''
+          });
           COMPANY.invoices = ensureInvoiceList(COMPANY).filter(x => x.id !== id);
           saveDB(); closeModal(); renderView(); toast('已删除', 'ok');
+        }
+      });
+      break;
+    }
+    /* 票据报账 / 撤销报账（v5.3 票据资金流转） */
+    case 'inv-report': openInvoiceReportModal(id); break;
+    case 'inv-unreport': {
+      const inv = ensureInvoiceList(COMPANY).find(x => x.id === id);
+      if (!inv || inv.form !== 'reported') break;
+      const month = (inv.reportedAt || '').slice(0, 7);
+      const crossMonth = month && month !== monthOf(todayISO());
+      confirmDialog({
+        title: '撤销报账？',
+        message: `将把「<b>${esc(inv.party || '')}</b>」的 ${fmt(inv.amount)} 从费用中冲回「未报账资金」，账面资金相应增加。` +
+          (crossMonth ? `<br><br><b>注意：该票据是在 ${monthLabel(month)} 报账的，撤销会影响已出的 ${monthLabel(month)} 报表。</b>` : ''),
+        confirmText: '撤销报账', requireCode: true,
+        onConfirm: () => {
+          unreportInvoice(inv);
+          logAction('修改', {
+            module: '票据', target: `撤销报账 ${inv.party || ''}`, targetId: id,
+            before: `已报账 ${fmt(inv.amount)}${month ? '（' + monthLabel(month) + '）' : ''}`, after: '未报账'
+          });
+          saveDB(); closeModal(); renderView();
+          toast(`已撤销报账，${fmt(inv.amount)} 回到未报账资金`, 'ok');
         }
       });
       break;
@@ -2307,21 +2475,16 @@ document.addEventListener('click', async e => {
     }
     case 'export-json': exportJSON(); break;
     case 'import-json': importJSON(); break;
+    case 'changelog-toggle': {
+      const box = document.getElementById('changelog');
+      if (!box) break;
+      const open = box.classList.toggle('is-open');
+      if (el.dataset) el.dataset.open = open ? '1' : '0';
+      el.innerHTML = icon(open ? 'chevronUp' : 'chevronDown', 13);
+      break;
+    }
     case 'export-all-csv': exportTxCSV(sortedTx(), '资金流水全部'); break;
     case 'open-data-folder': if (DESKTOP) window.desktop.openDataFolder(); break;
-    case 'seed':
-      if (DB.accounts.length || DB.transactions.length) {
-        confirmDialog({
-          title: '载入示例数据',
-        requireCode: true,
-          message: '示例数据会<b>覆盖当前账本</b>（账户、流水、往来款、预算）。如果已有正式数据，请先导出备份。<br><br>用户账号会保留。',
-          confirmText: '覆盖并载入',
-          onConfirm: () => { closeModal(); seedData(); }
-        });
-      } else {
-        seedData();
-      }
-      break;
     case 'clear-all':
       openClearAllModal();
       break;
@@ -2486,6 +2649,9 @@ bindDonutHover();
   applyMotion();
   applyPerf();          /* 先按上次结论定档，避免首屏用错档位闪一下 */
   applyTheme();
+  applyFX();            /* 交互反馈偏好：fx.js 读 data-fx 决定是否启用指针层 */
+  /* 看板的自动刷新开关是本地偏好，刷新后要恢复，否则「暂停」重启就失效 */
+  UI.fbLive = localStorage.getItem('fm-fb-live') !== 'off';
   await loadDB();
   await detectGpu();    /* 再问主进程要真实显卡状态，必要时降档 */
 

@@ -186,6 +186,19 @@ function closeModal() {
   setTimeout(finish, 240);                         /* 兜底：减少动效/关闭动画被禁用时也能收尾 */
 }
 
+/* 立即同步关闭最上层弹窗（无退场动画，不走 closeModal 的幂等保护）。
+   用途：确认框 / 密码框这类「叠在表单上的中间层」点确认后，先同步摘掉它自己，
+   再执行 onConfirm——这样 onConfirm 里的 closeModal() 就能正常关到底层表单。
+   否则 closeModal() 是异步的（240ms 退场），第二次 closeModal() 会撞上
+   entry.closing 的幂等保护被拦截，底层表单就留在屏幕上（阶段三 8 的复现）。 */
+function closeModalNow() {
+  closeCatPicker();
+  closePopover();
+  const entry = topModal();
+  if (!entry) return;
+  finalizeClose(entry);
+}
+
 function modalShell({ title, sub, body, footer, cls = '' }) {
   return `<div class="modal ${cls}" role="dialog" aria-modal="true">
     <div class="modal-hd">
@@ -303,7 +316,7 @@ function requireAdminPassword({ title = '需要管理员验证', message = '', c
       if (okBtn) { okBtn.disabled = false; okBtn.textContent = confirmText; }
       return fail('密码不正确，请重新输入');
     }
-    closeModal();
+    closeModalNow();
     if (typeof onConfirm === 'function') onConfirm();
   });
 
@@ -845,7 +858,7 @@ function validateForm(form, rules) {
     for (const c of (rule.checks || [])) {
       const label = rule.label || rule.name;
       if (c.t === 'required' && !V.required(raw)) { msg = c.msg || ('请填写' + label); break; }
-      if (c.t === 'number') {
+      if (c.t === 'number' && String(raw).trim() !== '') {
         if (!V.number(raw)) { msg = c.msg || (label + '必须是数字'); break; }
         const n = Number(raw);
         if (c.min != null && n < c.min) { msg = c.msg || (label + '不能小于 ' + c.min); break; }

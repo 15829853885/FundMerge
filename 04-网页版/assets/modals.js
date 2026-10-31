@@ -13,7 +13,14 @@ function openTxModal(id, opts) {
   }
   const isEdit = !!id;
   const tx = isEdit ? DB.transactions.find(t => t.id === id) : null;
-  const usable = DB.accounts.filter(a => a.active !== false || (tx && (a.id === tx.accountId || a.id === tx.toAccountId)));
+  /* 票据自动生成的分录（付款待票 / 回票转入 / 报账）不走手工编辑：
+     它的金额与状态由票据本体决定，改了流水会和票据对不上。 */
+  if (tx && isInvoiceTx(tx)) {
+    toast('这是票据自动生成的流水，请在「票据未回」页处理', 'err');
+    return;
+  }
+  /* 系统账户（票据未回 / 未报账）只由票据自动记账，不出现在手记账户下拉里 */
+  const usable = DB.accounts.filter(a => !isSystemAcc(a) && (a.active !== false || (tx && (a.id === tx.accountId || a.id === tx.toAccountId))));
   if (!usable.length) { toast('没有可用账户，请先启用或新建账户', 'err'); return openAccountModal(); }
 
   const type = tx ? tx.type : ((opts && opts.type) || 'out');
@@ -33,13 +40,13 @@ function openTxModal(id, opts) {
   };
 
   /* 转入账户：本公司 + 其他公司（公司间转账） */
-  const otherCos = DB.companies.filter(c => c.id !== COMPANY.id && c.accounts.some(a => a.active !== false));
+  const otherCos = DB.companies.filter(c => c.id !== COMPANY.id && c.accounts.some(a => !isSystemAcc(a) && a.active !== false));
   const toAccOpt = sel => {
     let html = '<optgroup label="本公司账户">' + usable.map(a =>
       `<option value="${a.id}" ${sel === a.id ? 'selected' : ''}>${esc(a.name)}（${a.type === 'cash' ? '现金' : '银行'}）</option>`
     ).join('') + '</optgroup>';
     otherCos.forEach(c => {
-      html += `<optgroup label="其他公司 · ${esc(c.name)}">` + c.accounts.filter(a => a.active !== false).map(a => {
+      html += `<optgroup label="其他公司 · ${esc(c.name)}">` + c.accounts.filter(a => !isSystemAcc(a) && a.active !== false).map(a => {
         const v = 'co:' + c.id + ':' + a.id;
         return `<option value="${v}" ${sel === v ? 'selected' : ''}>${esc(a.name)}（${a.type === 'cash' ? '现金' : '银行'}）</option>`;
       }).join('') + '</optgroup>';
@@ -93,6 +100,13 @@ function openTxModal(id, opts) {
                 `<option value="${p.id}" ${tx && tx.projectId === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
             </select>
           </label>
+          <label class="field ${type === 'out' && !isEdit ? '' : 'hidden'}" data-role="inv-field"><span class="lbl">票据状态</span>
+            <select name="invoiceStatus">
+              <option value="">不用票据（直接记支出）</option>
+              <option value="none">未回（发票没到）</option>
+              <option value="partial">部分回（已收部分发票）</option>
+              <option value="done">已回（发票已到）</option>
+            </select></label>
           <label class="field"><span class="lbl">经办人</span><input type="text" name="operator" value="${esc(tx ? (tx.operator || '') : SESSION.displayName)}"></label>
         </div>
       </div>
@@ -123,6 +137,8 @@ function openTxModal(id, opts) {
     $('[data-role=cat-field]', form).classList.toggle('hidden', t === 'transfer');
     const pf = $('[data-role=project-field]', form);
     if (pf) pf.classList.toggle('hidden', t === 'transfer');
+    const inf = $('[data-role=inv-field]', form);
+    if (inf) inf.classList.toggle('hidden', t !== 'out' || !!tx);
     holder.innerHTML = categoryPickerHTML({ value: '', kind: t === 'transfer' ? 'out' : t });
     form.elements.accountId.innerHTML = accOpt(usable[0].id, t === 'out');
     updateHint();
@@ -149,6 +165,14 @@ function openTxModal(id, opts) {
       form.elements.toAmount.value = round2(amt * r1 / r2);
     }
   };
+
+  /* 选了票据状态后，「分类」就变成「报账费用分类」——它不再决定这笔流水的归属，
+     而是预选报账时记到哪个费用分类（报账时还能改）。 */
+  const invSel = form.elements.invoiceStatus;
+  if (invSel) invSel.addEventListener('change', () => {
+    const lbl = $('[data-role=cat-field] .lbl', form);
+    if (lbl) lbl.textContent = invSel.value ? '报账费用分类（可留空）' : '分类';
+  });
 
   $$('.seg-btn', seg).forEach(b => b.addEventListener('click', () => { setType(b.dataset.txtype); syncToAmount(); }));
   form.elements.accountId.addEventListener('change', () => { updateHint(); syncToAmount(); });
@@ -193,7 +217,7 @@ function openTxModal(id, opts) {
     if (t === 'transfer') {
       if (!toRaw) return toast('请选择转入账户', 'err');
       if (toRaw === accRaw) return toast('转出与转入账户不能相同', 'err');
-    } else if (!fd.get('categoryId')) {
+    } else if (!fd.get('categoryId') && !String(fd.get('invoiceStatus') || '')) {
       return toast('请选择分类', 'err');
     }
     if (isGroupPay && t !== 'out') return toast('集团代付只能用于支出', 'err');
@@ -209,6 +233,39 @@ function openTxModal(id, opts) {
       userId: SESSION.id,
       updatedAt: new Date().toISOString()
     };
+
+    /* 票据登记：支出 + 选了票据状态 → 不记普通支出，改为「付款账户 → 票据资金」内部转账，
+       账面资金不变；整张回票后转未报账，报账才计费用。 */
+    const invStatus = String(fd.get('invoiceStatus') || '');
+    if (t === 'out' && invStatus && !isEdit && !isGroupPay) {
+      const inv = {
+        id: uid('inv'),
+        party: base.counterparty,
+        amount,
+        payDate: base.date,
+        expectDate: '',
+        status: invStatus,
+        receivedAmount: invStatus === 'done' ? amount : 0,
+        actualDate: invStatus === 'done' ? base.date : '',
+        form: 'unreported',
+        accountId: accId,
+        expenseCategoryId: String(fd.get('categoryId') || ''),
+        currency: accCurrency(accById(accId)),
+        note: base.summary,
+        txIds: [],
+        migrated: true
+      };
+      ensureInvoiceList(COMPANY).push(inv);
+      postInvoice(inv, 'register');
+      if (inv.status === 'done') postInvoice(inv, 'receive-done');
+      logAction('新增', {
+        module: '票据', target: '票据 ' + inv.party, targetId: inv.id,
+        after: `${fmt(amount)} · ${INVOICE_STATUS[invStatus]} · 付款账户 ${(accById(accId) || {}).name || ''}`
+      });
+      saveDB(); closeModal(); render();
+      toast(`已登记票据 ${fmt(amount)}，款项转入${invStatus === 'done' ? '未报账资金' : '票据未回资金'}，账面资金不变`, 'ok');
+      return;
+    }
 
     /* 公司间转账：双方各记一笔，金额互相对应 */
     if (isCross) {
@@ -240,7 +297,7 @@ function openTxModal(id, opts) {
       type: t,
       toAccountId: t === 'transfer' ? toRaw : '',
       amount,
-      toAmount: (t === 'transfer' && num(fd.get('toAmount')) > 0) ? round2(num(fd.get('toAmount'))) : '',
+      toAmount: (t === 'transfer' && num(fd.get('toAmount')) > 0) ? round2(num(fd.get('toAmount'))) : null,
       categoryId: t === 'transfer' ? '' : fd.get('categoryId'),
       category: t === 'transfer' ? '内部转账' : (catById(fd.get('categoryId')) || {}).name || ''
     });
@@ -299,13 +356,14 @@ function openTxModal(id, opts) {
 /* --------------------------------- 账户弹窗 -------------------------------- */
 
 function openAccountModal(id) {
+  if (id) { const ea = accById(id); if (ea && isSystemAcc(ea)) return toast('系统账户由票据自动维护，不能手工编辑', 'err'); }
   const isEdit = !!id;
   const a = isEdit ? accById(id) : null;
 
   openModal(modalShell({
     title: isEdit ? '编辑账户' : '新增账户',
     sub: '期初余额为「期初日期」当天的账面余额',
-    body: `<form id="acc-form">
+    body: `<form id="acc-form" novalidate>
       <div class="modal-bd">
         <div class="form-grid">
           <label class="field span-2"><span class="lbl">账户名称</span><input type="text" name="name" value="${a ? esc(a.name) : ''}" placeholder="如：Ecobank 基本户 / 库存现金" required></label>
@@ -379,6 +437,7 @@ function openAccountModal(id) {
 /* --------------------------------- 对账弹窗 -------------------------------- */
 
 function openReconcileModal(id) {
+  { const ra = accById(id); if (ra && isSystemAcc(ra)) return toast('系统账户不能做对账调整', 'err'); }
   const a = accById(id);
   if (!a) return;
   const book = balanceOf(a);
@@ -387,7 +446,7 @@ function openReconcileModal(id) {
     title: '对账调整',
     sub: `${esc(a.name)} · 账面余额 ${fmt(book)}`,
     cls: 'slim',
-    body: `<form id="rec-form">
+    body: `<form id="rec-form" novalidate>
       <div class="modal-bd">
         <div class="alert info" style="margin-bottom:14px">
           ${icon('info', 15)}
@@ -455,12 +514,13 @@ function openDebtModal(id, presetType) {
   const isEdit = !!id;
   const d = isEdit ? DB.debts.find(x => x.id === id) : null;
   const type = d ? d.type : (presetType || UI.debtTab || 'lend');
-  const usable = DB.accounts.filter(a => a.active !== false);
+  /* 系统账户不参与往来款收付：它只由票据流程维护 */
+  const usable = manualAccounts();
 
   openModal(modalShell({
     title: isEdit ? '编辑往来款' : '登记往来款',
     sub: '借出款与借入款会同时生成资金流水；员工未报销只在结清时付款',
-    body: `<form id="debt-form">
+    body: `<form id="debt-form" novalidate>
       <div class="modal-bd">
         <div class="seg" id="debt-type-seg" style="margin-bottom:16px;width:100%">
           ${[['lend', '借出款（应收）'], ['borrow', '借入款（应付）'], ['reimburse', '员工未报销']].map(([k, l]) =>
@@ -582,7 +642,8 @@ function openSettleModal(debtId) {
   const d = DB.debts.find(x => x.id === debtId);
   if (!d) return;
   const info = debtInfo(d);
-  const usable = DB.accounts.filter(a => a.active !== false);
+  /* 系统账户不参与往来款收付：它只由票据流程维护 */
+  const usable = manualAccounts();
   if (!usable.length) { toast('请先创建账户', 'err'); return openAccountModal(); }
 
   const t = DEBT_TYPE[d.type];
@@ -592,7 +653,7 @@ function openSettleModal(debtId) {
     title: actionLabel,
     sub: `${esc(d.party)} · 未结 ${fmt(info.remaining)}`,
     cls: 'slim',
-    body: `<form id="settle-form">
+    body: `<form id="settle-form" novalidate>
       <div class="modal-bd">
         <div class="summary-strip" style="padding:0 0 14px;gap:22px">
           <div class="item"><span>原始金额</span><strong>${fmt(d.amount)}</strong></div>
@@ -700,7 +761,7 @@ function openCategoryModal(id, opts = {}) {
   openModal(modalShell({
     title: isEdit ? '编辑分类' : '新建分类',
     sub: '分类决定记账口径与现金流量表的归集方式',
-    body: `<form id="cat-form">
+    body: `<form id="cat-form" novalidate>
       <div class="modal-bd">
         <div class="form-grid">
           <label class="field"><span class="lbl">分类名称</span><input type="text" name="name" value="${c ? esc(c.name) : ''}" placeholder="如：采购付款" required></label>
@@ -808,7 +869,7 @@ function openCompanyModal(id) {
     title: isEdit ? '编辑公司' : '新建公司',
     sub: isEdit ? '修改公司信息不会影响账本数据' : '新公司会获得一套独立的账户、分类与账本，与现有公司互不影响',
     cls: 'slim',
-    body: `<form id="co-form">
+    body: `<form id="co-form" novalidate>
       <div class="modal-bd">
         <div class="form-grid">
           <label class="field span-2"><span class="lbl">公司名称</span><input type="text" name="name" value="${c ? esc(c.name) : ''}" placeholder="如：Accra Trading Ltd" required></label>
@@ -888,7 +949,7 @@ function openUserModal(id) {
     title: isEdit ? '编辑用户' : '新增用户',
     sub: isEdit ? '修改显示名称、角色与状态' : '为同事创建本地登录账号',
     cls: 'slim',
-    body: `<form id="user-form">
+    body: `<form id="user-form" novalidate>
       <div class="modal-bd">
         <div class="form-grid">
           <label class="field span-2"><span class="lbl">登录账号</span>
@@ -1008,7 +1069,7 @@ function openPasswordModal(userId) {
     title: isSelf ? '修改密码' : '重置密码',
     sub: isSelf ? '修改后下次登录使用新密码' : `为 ${esc(u ? u.displayName : '')} 设置新密码`,
     cls: 'slim',
-    body: `<form id="pwd-form">
+    body: `<form id="pwd-form" novalidate>
       <div class="modal-bd">
         <div class="form-grid">
           ${isSelf ? `<label class="field span-2"><span class="lbl">当前密码</span><input type="password" name="oldPwd" required></label>` : ''}
@@ -1228,82 +1289,7 @@ async function importJSON() {
   if (data) applyImport(data);
 }
 
-/* --------------------------------- 示例数据 -------------------------------- */
 
-function seedData() {
-  const t = todayISO();
-  const d = n => addDays(t, -n);
-
-  const cash = { id: uid('a'), name: '库存现金', type: 'cash', bankName: '', accountNo: '', openingBalance: 8500, openingDate: d(120), note: '出纳备用金', active: true };
-  const eco = { id: uid('a'), name: 'Ecobank 基本户', type: 'bank', bankName: 'Ecobank Ghana · Accra Main', accountNo: 'GH82 3001 **** 4471', openingBalance: 268000, openingDate: d(120), note: '主要收付账户', active: true };
-  const gcb = { id: uid('a'), name: 'GCB 一般户', type: 'bank', bankName: 'GCB Bank · Osu Branch', accountNo: 'GH56 1601 **** 2093', openingBalance: 74000, openingDate: d(120), note: '工资与费用', active: true };
-
-  const cat = name => (DB.categories.find(c => c.name === name) || {}).id || '';
-
-  const rows = [
-    [d(88), 'in', eco.id, 128000, '销售回款', 'Accra Trading Ltd', '9月订单尾款'],
-    [d(85), 'out', eco.id, 46000, '采购付款', 'Kumasi Supplies', '原材料采购 一批'],
-    [d(82), 'out', eco.id, 12000, '房租物业', 'Airport City 物业', '第三季度房租'],
-    [d(80), 'transfer', eco.id, 50000, '内部转账', '', '基本户转一般户备付工资', gcb.id],
-    [d(78), 'out', gcb.id, 68200, '工资薪酬', '员工', '8月工资发放'],
-    [d(76), 'out', gcb.id, 14300, '社保公积金', 'SSNIT', '8月社保公积金'],
-    [d(70), 'in', cash.id, 3000, '往来款收回', 'Kofi Mensah', '员工借款归还'],
-    [d(66), 'out', cash.id, 860, '办公费用', 'Papyrus Stationery', '打印纸与耗材'],
-    [d(60), 'in', eco.id, 96500, '销售回款', 'Tema Logistics', '项目一期款'],
-    [d(58), 'out', eco.id, 32800, '税费', 'GRA', '增值税及附加'],
-    [d(55), 'out', gcb.id, 5200, '差旅费', '员工报销', 'Kumasi 客户拜访'],
-    [d(50), 'in', eco.id, 2400, '利息收入', 'Ecobank', '季度存款利息'],
-    [d(46), 'out', eco.id, 78000, '采购付款', 'Takoradi Hardware', '设备配件采购'],
-    [d(42), 'transfer', eco.id, 60000, '内部转账', '', '补充工资账户', gcb.id],
-    [d(40), 'out', gcb.id, 71200, '工资薪酬', '员工', '9月工资发放'],
-    [d(38), 'out', gcb.id, 14900, '社保公积金', 'SSNIT', '9月社保公积金'],
-    [d(34), 'out', cash.id, 1200, '水电费', 'ECG', '办公水电'],
-    [d(30), 'in', eco.id, 156000, '销售回款', 'Accra Trading Ltd', '10月订单预付款'],
-    [d(26), 'out', eco.id, 5600, '市场推广', 'Meta Ads', '线上投放'],
-    [d(22), 'out', gcb.id, 3600, '利息手续费', 'GCB Bank', '贷款利息及手续费'],
-    [d(18), 'in', gcb.id, 22000, '服务收入', 'Volta Consulting', '技术服务费'],
-    [d(15), 'out', cash.id, 2400, '备用金', '出纳', '提取备用金'],
-    [d(12), 'out', eco.id, 88000, '采购付款', 'Kumasi Supplies', '原材料采购 二批'],
-    [d(9), 'in', eco.id, 48000, '其他业务收入', '废料回收', '边角料处置收入'],
-    [d(6), 'out', gcb.id, 4280, '办公费用', 'Compughana', '办公设备'],
-    [d(4), 'out', eco.id, 15000, '还款', 'Ecobank', '短期借款还款'],
-    [d(2), 'in', eco.id, 76000, '销售回款', 'Tema Logistics', '项目二期款']
-  ];
-
-  DB.accounts = [cash, eco, gcb];
-  DB.transactions = rows.map(r => ({
-    id: uid('t'),
-    date: r[0], type: r[1], accountId: r[2], amount: r[3],
-    categoryId: r[1] === 'transfer' ? '' : cat(r[4]),
-    category: r[4], counterparty: r[5], summary: r[6],
-    toAccountId: r[7] || '', voucherNo: '', operator: SESSION.displayName, userId: SESSION.id,
-    createdAt: new Date(r[0] + 'T09:00:00').toISOString(),
-    updatedAt: new Date(r[0] + 'T09:00:00').toISOString()
-  }));
-
-  DB.debts = [
-    { id: uid('d'), type: 'lend', party: 'Kofi Mensah', amount: 15000, date: d(45), dueDate: addDays(t, 15), accountId: eco.id, note: '员工应急借款', createdAt: new Date().toISOString(), userId: SESSION.id },
-    { id: uid('d'), type: 'lend', party: 'Accra Trading Ltd', amount: 32000, date: d(20), dueDate: addDays(t, -3), accountId: eco.id, note: '客户短期周转', createdAt: new Date().toISOString(), userId: SESSION.id },
-    { id: uid('d'), type: 'borrow', party: 'Ecobank', amount: 120000, date: d(70), dueDate: addDays(t, 90), accountId: eco.id, note: '流动资金贷款', createdAt: new Date().toISOString(), userId: SESSION.id },
-    { id: uid('d'), type: 'reimburse', party: 'Ama Boateng', amount: 3200, date: d(8), dueDate: '', accountId: '', note: '客户拜访交通与餐费', createdAt: new Date().toISOString(), userId: SESSION.id },
-    { id: uid('d'), type: 'reimburse', party: 'Yaw Owusu', amount: 1850, date: d(3), dueDate: '', accountId: '', note: '办公用品垫付', createdAt: new Date().toISOString(), userId: SESSION.id }
-  ];
-  DB.settlements = [];
-
-  const thisM = monthOf(t);
-  const budgets = [
-    ['采购付款', 200000], ['工资薪酬', 75000], ['房租物业', 15000], ['税费', 40000],
-    ['办公费用', 8000], ['市场推广', 12000], ['差旅费', 6000], ['水电费', 3000]
-  ];
-  DB.budgets = budgets.map(([name, amt]) => ({ id: uid('b'), month: thisM, categoryId: cat(name), amount: amt }))
-    .filter(b => b.categoryId);
-
-  if (!COMPANY.name || COMPANY.name === '我的公司') COMPANY.name = '示例贸易有限公司';
-  saveDB();
-  UI.view = 'dashboard';
-  render();
-  toast('示例数据已载入', 'ok');
-}
 
 /* -------------------------------- 公司档案 -------------------------------- */
 
@@ -1316,7 +1302,7 @@ function openVaultFieldModal(fieldId, preset) {
     title: isEdit ? '编辑条目' : '添加条目',
     sub: '密码类条目在列表中默认以圆点显示',
     cls: 'slim',
-    body: `<form id="vault-form">
+    body: `<form id="vault-form" novalidate>
       <div class="modal-bd">
         <div class="form-grid">
           <label class="field span-2"><span class="lbl">名称</span><input type="text" name="label" value="${esc(data.label)}" placeholder="如：网银密码" required></label>
@@ -1411,7 +1397,7 @@ async function openFileUploadModal() {
   openModal(modalShell({
     title: rows.length > 1 ? `上传 ${rows.length} 个文件` : '上传资料',
     sub: '可以给每个文件起一个容易识别的名称',
-    body: `<form id="upload-form">
+    body: `<form id="upload-form" novalidate>
       <div class="modal-bd">
         <div class="upload-list">
           ${rows.map(r => {
@@ -1479,7 +1465,7 @@ function openFileRenameModal(fileId) {
     title: '重命名资料',
     sub: `${esc(f.original || '')} · ${fmtSize(f.size)}`,
     cls: 'slim',
-    body: `<form id="rename-form">
+    body: `<form id="rename-form" novalidate>
       <div class="modal-bd">
         <label class="field"><span class="lbl">资料名称</span><input type="text" name="name" value="${esc(f.name)}" required></label>
       </div>
@@ -1525,7 +1511,7 @@ function openSecurityModal() {
   openModal(modalShell({
     title: cur.length ? '修改预留信息' : '设置预留信息',
     sub: '忘记密码时，通过这两个问题的答案验证身份并重置密码',
-    body: `<form id="sec-form">
+    body: `<form id="sec-form" novalidate>
       <div class="modal-bd">
         <div class="form-grid" style="gap:13px">
           ${row(0)}
@@ -1986,14 +1972,14 @@ function openAdvanceModal() {
 function issueAdvance(id) {
   const a = ensureAdvanceList(COMPANY).find(x => x.id === id);
   if (!a) return;
-  const accs = DB.accounts.filter(x => x.active !== false);
+  const accs = manualAccounts();
   if (!accs.length) return toast('请先创建账户', 'err');
 
   openModal(modalShell({
     title: '发放借支',
     sub: `向 ${a.userName} 发放 ${fmt(a.amount)}，将生成一笔支出流水`,
     cls: 'slim',
-    body: `<form id="issue-form">
+    body: `<form id="issue-form" novalidate>
       <div class="modal-bd">
         <div class="form-grid">
           <label class="field span-2"><span class="lbl">付款账户</span>
@@ -2042,7 +2028,7 @@ function closeAdvance(id) {
     title: '核销借支',
     sub: `${esc(a.userName || '')} · 借支 ${fmt(a.amount)} · 剩余 ${fmt(remain)}`,
     cls: 'slim',
-    body: `<form id="close-adv-form">
+    body: `<form id="close-adv-form" novalidate>
       <div class="modal-bd">
         <div class="summary-strip" style="padding:0 0 14px;gap:22px">
           <div class="item"><span>借支金额</span><strong>${fmt(a.amount)}</strong></div>
@@ -2055,7 +2041,7 @@ function closeAdvance(id) {
               <input type="number" name="used" min="0" step="0.01" value="${remain}" required></div></label>
           <label class="field span-2"><span class="lbl">余额退回账户</span>
             <select name="accountId"><option value="">不退余额</option>
-              ${DB.accounts.filter(x => x.active !== false).map(x => `<option value="${x.id}" ${a.accountId === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}
+              ${manualAccounts().map(x => `<option value="${x.id}" ${a.accountId === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}
             </select></label>
           <label class="field span-2"><span class="lbl">核销日期</span>
             <input type="date" name="date" value="${todayISO()}"></label>
@@ -2154,9 +2140,18 @@ function undoAdvanceDraw(id) {
 function openInvoiceModal(id) {
   const isEdit = !!id;
   const inv = isEdit ? ensureInvoiceList(COMPANY).find(x => x.id === id) : null;
+  if (isEdit && inv && inv.form === 'reported') {
+    return toast('已报账的票据不能修改，请先「撤销报账」', 'err');
+  }
+  /* 付款账户只能是真实的现金/银行账户；系统账户不参与手工选择 */
+  const payAccs = (COMPANY.accounts || []).filter(a => !isSystemAcc(a) && a.active !== false);
+  const outCats = (COMPANY.categories || []).filter(c => c.kind === 'out' && c.active !== false);
+  const curAcc = inv ? inv.accountId : (payAccs[0] ? payAccs[0].id : '');
+  const curCat = inv ? inv.expenseCategoryId : '';
+
   openModal(modalShell({
-    title: isEdit ? '更新票据状态' : '登记未回票据',
-    sub: '付款后发票未到，先记下来',
+    title: isEdit ? '编辑票据' : '登记未回票据',
+    sub: isEdit ? '状态请用「回票」更新；这里改付款账户与费用分类' : '付款后发票未到，先记下来',
     cls: 'slim',
     body: `<form id="inv-form" novalidate>
       <div class="modal-bd">
@@ -2166,18 +2161,29 @@ function openInvoiceModal(id) {
           <label class="field"><span class="lbl">金额</span>
             <div class="input-affix"><span class="prefix">${curSymbol()}</span>
               <input type="number" name="amount" min="0.01" step="0.01" value="${inv ? inv.amount : ''}" required></div></label>
+          <label class="field"><span class="lbl">付款账户</span>
+            <select name="accountId">
+              ${payAccs.map(a => `<option value="${a.id}" ${curAcc === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('') || '<option value="">（请先建账户）</option>'}
+            </select></label>
           <label class="field"><span class="lbl">付款日期</span>
             <input type="date" name="payDate" value="${inv ? inv.payDate : todayISO()}"></label>
           <label class="field"><span class="lbl">预计回票日</span>
             <input type="date" name="expectDate" value="${inv ? inv.expectDate || '' : ''}"></label>
+          <label class="field"><span class="lbl">报账费用分类</span>
+            <select name="expenseCategoryId">
+              <option value="">报账时再选</option>
+              ${outCats.map(c => `<option value="${c.id}" ${curCat === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+            </select></label>
           <label class="field"><span class="lbl">状态</span>
-            <select name="status">${Object.entries(INVOICE_STATUS).map(([k, v]) =>
-              `<option value="${k}" ${inv && inv.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+            <input type="text" value="${inv ? (INVOICE_STATUS[inv.status] || '未回') : '未回'}" disabled>
+          </label>
           <label class="field"><span class="lbl">实际回票日</span>
             <input type="date" name="actualDate" value="${inv ? inv.actualDate || '' : ''}"></label>
           <label class="field span-2"><span class="lbl">备注</span>
             <input type="text" name="note" value="${inv ? esc(inv.note || '') : ''}" placeholder="发票号、说明"></label>
         </div>
+        <div class="alert info" style="margin-top:12px">${icon('info', 15)}
+          <div>登记后这笔钱会从付款账户转入「票据未回资金」，<b>账面资金不变</b>；整张回票后转入「未报账资金」；报账时才计入费用。</div></div>
       </div>
       <div class="modal-ft"><div class="spacer"></div>
         <button type="button" class="btn secondary" data-action="close-modal">取消</button>
@@ -2203,21 +2209,102 @@ function openInvoiceModal(id) {
       party, amount,
       payDate: fd.get('payDate') || todayISO(),
       expectDate: fd.get('expectDate') || '',
-      status: fd.get('status') || 'none',
       actualDate: fd.get('actualDate') || '',
+      accountId: String(fd.get('accountId') || ''),
+      expenseCategoryId: String(fd.get('expenseCategoryId') || ''),
       note: String(fd.get('note') || '').trim()
     };
-    if (isEdit) { Object.assign(inv, data); logAction('修改', { module: '档案', target: '票据 ' + party, targetId: inv.id }); }
-    else {
-      const ni = Object.assign({ id: uid('inv') }, data);
+
+    if (isEdit) {
+      const accChanged = String(inv.accountId || '') !== data.accountId;
+      const amtChanged = round2(num(inv.amount)) !== amount;
+      const oldAmt = round2(num(inv.amount));
+      Object.assign(inv, data);
+      /* 金额变小后，已回金额要跟着收敛 */
+      if (amtChanged) inv.receivedAmount = Math.min(num(inv.receivedAmount), amount);
+      if (accChanged || amtChanged) {
+        /* 重发全部内部流转流水：先清掉旧的，再按新值重建 */
+        removeInvoicePostings(inv);
+        postInvoice(inv, 'register');
+        if (inv.status === 'done') postInvoice(inv, 'receive-done');
+      }
+      logAction('修改', {
+        module: '档案', target: '票据 ' + party, targetId: inv.id,
+        before: `金额 ${fmt(oldAmt)}`, after: `金额 ${fmt(amount)}`
+      });
+    } else {
+      if (!data.accountId) return toast('请先建立一个现金或银行账户', 'err');
+      const ni = Object.assign({ id: uid('inv'), receivedAmount: 0, status: 'none', form: 'unreported', txIds: [], migrated: true }, data);
       ensureInvoiceList(COMPANY).push(ni);
-      logAction('新增', { module: '档案', target: '票据 ' + party, targetId: ni.id });
+      postInvoice(ni, 'register');
+      logAction('新增', { module: '档案', target: '票据 ' + party, targetId: ni.id, after: `金额 ${fmt(amount)}` });
     }
     saveDB(); closeModal(); render();
-    toast(isEdit ? '已更新' : '已登记', 'ok');
+    toast(isEdit ? '已更新' : '已登记，款项已转入票据未回资金', 'ok');
   });
 }
 
+/* 票据报账：选费用分类，把「未报账资金」记成费用（这一步才减少账面资金） */
+function openInvoiceReportModal(id) {
+  const inv = ensureInvoiceList(COMPANY).find(x => x.id === id);
+  if (!inv) return;
+  if (inv.form === 'reported') return toast('该票据已报账', 'err');
+  if (inv.status !== 'done') return toast('发票还没整张回完，暂不能报账', 'err');
+  const outCats = (COMPANY.categories || []).filter(c => c.kind === 'out' && c.active !== false);
+
+  openModal(modalShell({
+    title: '票据报账',
+    sub: `${esc(inv.party || '')} · ${fmt(inv.amount)}`,
+    cls: 'slim',
+    body: `<form id="inv-report-form" novalidate>
+      <div class="modal-bd">
+        <div class="summary-strip" style="padding:0 0 14px;gap:22px">
+          <div class="item"><span>票面金额</span><strong>${fmt(inv.amount)}</strong></div>
+          <div class="item"><span>当前所在</span><strong>未报账资金</strong></div>
+        </div>
+        <div class="form-grid">
+          <label class="field span-2"><span class="lbl">费用分类</span>
+            <select name="categoryId" required>
+              <option value="">请选择费用分类</option>
+              ${outCats.map(c => `<option value="${c.id}" ${inv.expenseCategoryId === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+            </select></label>
+          <label class="field span-2"><span class="lbl">报账日期</span>
+            <input type="date" name="date" value="${todayISO()}"></label>
+        </div>
+        <div class="alert warn" style="margin-top:12px">${icon('alert', 15)}
+          <div>报账后这笔钱会计入<b>费用支出</b>，账面资金减少 <b>${fmt(inv.amount)}</b>，并计入本月预算执行。</div></div>
+      </div>
+      <div class="modal-ft"><div class="spacer"></div>
+        <button type="button" class="btn secondary" data-action="close-modal">取消</button>
+        <button type="submit" class="btn primary">确认报账</button>
+      </div>
+    </form>`
+  }));
+
+  $('#inv-report-form').addEventListener('submit', e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const cat = String(fd.get('categoryId') || '');
+    if (!cat) return toast('请选择费用分类', 'err');
+    const date = fd.get('date') || todayISO();
+    guardChange({
+      title: '确认报账？',
+      message: `「<b>${esc(inv.party || '')}</b>」${fmt(inv.amount)} 将计入费用，账面资金减少 <b>${fmt(inv.amount)}</b>。`,
+      confirmText: '确认报账',
+      level: 'code',
+      onConfirm: () => {
+        const t = reportInvoice(inv, cat);
+        if (t) t.date = date;
+        logAction('修改', {
+          module: '票据', target: `报账 ${inv.party || ''}`, targetId: inv.id,
+          before: '未报账', after: `已报账 ${fmt(inv.amount)}（${(COMPANY.categories || []).find(c => c.id === cat)?.name || '费用'}）`
+        });
+        saveDB(); closeModal(); render();
+        toast(`已报账 ${fmt(inv.amount)}`, 'ok');
+      }
+    });
+  });
+}
 
 /* ------------------------------ 项目 ------------------------------ */
 function openProjectModal(id) {
@@ -2595,7 +2682,7 @@ function openClearAllModal() {
     title: '清空数据',
     sub: '此操作不可恢复，请先导出账套包备份',
     cls: 'slim',
-    body: `<form id="clear-form">
+    body: `<form id="clear-form" novalidate>
       <div class="modal-bd">
         <div class="alert danger" style="margin-bottom:14px">
           ${icon('alert', 15)}
@@ -2681,7 +2768,7 @@ function openInvoiceReceiveModal(id) {
     title: '登记回票',
     sub: `${esc(inv.party || '')} · 票面 ${fmt(total)}`,
     cls: 'slim',
-    body: `<form id="inv-recv-form">
+    body: `<form id="inv-recv-form" novalidate>
       <div class="modal-bd">
         <div class="summary-strip" style="padding:0 0 14px;gap:22px">
           <div class="item"><span>票面金额</span><strong>${fmt(total)}</strong></div>
@@ -2739,9 +2826,12 @@ function openInvoiceReceiveModal(id) {
       confirmText: '确认回票',
       level: 'code',
       onConfirm: () => {
+        const wasDone = inv.status === 'done';
         inv.receivedAmount = nextGot;
         inv.status = nextStatus;
         inv.actualDate = date;
+        /* 整张回完：票据未回资金 → 未报账资金（内部转移，账面资金不变） */
+        if (nextStatus === 'done' && !wasDone) postInvoice(inv, 'receive-done');
         logAction('修改', {
           module: '票据',
           target: `${inv.party || ''} 回票 ${fmt(add)}`,
@@ -2758,22 +2848,29 @@ function openInvoiceReceiveModal(id) {
 
 /* 资金对账单导出（REQ-20） */
 async function exportFundStatement() {
-  const cash = round2(DB.accounts.filter(a => a.type === 'cash').reduce((s, a) => s + balanceOf(a), 0));
-  const bank = round2(totalBalance() - cash);
-  const invs = ensureInvoiceList(COMPANY).filter(i => i.status !== 'done');
-  const invAmt = round2(invs.reduce((s, i) => s + Math.max(0, num(i.amount) - num(i.receivedAmount)), 0));
-  const borrow = round2(debtTotals('borrow').remaining + debtTotals('reimburse').remaining);
+  const t = companyTotals(COMPANY);
+  const fund = invoiceFund(COMPANY);
   const advs = ensureAdvanceList(COMPANY).filter(a => advanceInfo(a).status === 'issued');
   const advAmt = round2(advs.reduce((s, a) => s + advanceInfo(a).remain, 0));
-  const total = round2(cash + bank + invAmt + borrow + advAmt);
+  const lend = debtTotals('lend');
+  const borrow = debtTotals('borrow');
+  const reimb = debtTotals('reimburse');
+  /* 口径与页面一致：借入款 / 员工未报销是应付款项，不计入账面资金 */
+  const total = round2(t.cash + t.bank + fund.pending + fund.unreported + advAmt + lend.remaining);
+  const payable = round2(borrow.remaining + reimb.remaining);
 
   const rows = [
-    ['库存现金', cash.toFixed(2)],
-    ['银行存款', bank.toFixed(2)],
-    ['票据未回', invAmt.toFixed(2)],
-    ['借款（借入未还 + 员工未报销）', borrow.toFixed(2)],
+    ['库存现金', t.cash.toFixed(2)],
+    ['银行存款', t.bank.toFixed(2)],
+    ['票据未回资金', fund.pending.toFixed(2)],
+    ['未报账资金', fund.unreported.toFixed(2)],
     ['借支备用金（未核销）', advAmt.toFixed(2)],
-    ['总账面金额', total.toFixed(2)]
+    ['借出款（未收回）', lend.remaining.toFixed(2)],
+    ['账面资金', total.toFixed(2)],
+    ['—— 应付款项（不计入账面资金）——', ''],
+    ['借入款（未还）', borrow.remaining.toFixed(2)],
+    ['员工未报销', reimb.remaining.toFixed(2)],
+    ['应付款项合计', payable.toFixed(2)]
   ];
   const ok = await saveTextFile(`资金对账单_${COMPANY.name}_${todayISO()}.csv`, toCSV(['构成项', '金额'], rows), 'text/csv;charset=utf-8');
   if (ok) toast('资金对账单已导出', 'ok');
@@ -2789,7 +2886,7 @@ function openLogNoteModal(id) {
     title: '给这条日志加备注',
     sub: `${fmtDateTime(log.at)} · ${log.userName} · ${log.action} ${log.target}`,
     cls: 'slim',
-    body: `<form id="log-note-form">
+    body: `<form id="log-note-form" novalidate>
       <div class="modal-bd">
         <div class="alert info" style="margin-bottom:12px">${icon('info', 15)}
           <div>原始记录（时间、用户、对象、变更前后）不可修改，备注只做补充说明。</div></div>
@@ -2854,7 +2951,7 @@ function openFxModal(cur) {
     title: `录入 ${CURRENCIES[cur].name} 汇率`,
     sub: `1 ${cur} = ? ${base}`,
     cls: 'slim',
-    body: `<form id="fx-form">
+    body: `<form id="fx-form" novalidate>
       <div class="modal-bd">
         <div class="form-grid">
           <label class="field"><span class="lbl">汇率（1 ${cur} 折合 ${base}）</span>
@@ -2919,7 +3016,7 @@ function openVaultBundleModal() {
   openModal(modalShell({
     title: '添加账号卡片',
     sub: '一次填完一个账号的全部信息，保存后归为一组',
-    body: `<form id="vault-bundle-form">
+    body: `<form id="vault-bundle-form" novalidate>
       <div class="modal-bd">
         <div class="form-grid">
           <label class="field span-2"><span class="lbl">卡片名称（用于识别）</span>
@@ -2990,7 +3087,7 @@ function openGroupCompanyModal() {
     title: '创建集团公司',
     sub: '集团自身也是一家公司，可独立维护档案、账户与流水',
     cls: 'slim',
-    body: `<form id="group-co-form">
+    body: `<form id="group-co-form" novalidate>
       <div class="modal-bd">
         <div class="alert info" style="margin-bottom:14px">${icon('info', 15)}
           <div>创建后这家公司就是「集团总公司」。它是否计入集团合并，由「设置 → 集团总公司登记方式」控制，随时可改。</div>
@@ -3052,7 +3149,7 @@ function openGroupPickModal() {
     title: '指定集团公司',
     sub: '选一家现有公司作为集团总公司，其账本数据不变',
     cls: 'slim',
-    body: `<form id="group-pick-form">
+    body: `<form id="group-pick-form" novalidate>
       <div class="modal-bd">
         <div class="alert warn" style="margin-bottom:14px">${icon('alert', 15)}
           <div>若这家公司平时已经在记账，指定后它的数据仍归它自己，只是多了「集团总公司」身份。</div>
