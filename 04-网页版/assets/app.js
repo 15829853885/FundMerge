@@ -2166,8 +2166,8 @@ document.addEventListener('click', async e => {
           toast('正在下载并恢复…', '');
           const r = await window.desktop.backup.restoreVersion(no);
           if (!r.ok) return toast('恢复失败：' + r.error, 'err');
-          logAction('恢复', { module: '数据', target: '云盘版本 v' + no, after: r.companies + ' 家公司' });
-          saveDB();
+          /* 主进程 backup:restore-version 已通过 flpack.applyImport 写盘。这里不能 saveDB()：
+             会把「恢复前的旧内存 DB」写回磁盘，覆盖刚恢复的版本（与账套包导入同源 bug）。 */
           toast('恢复成功，正在重新加载…', 'ok');
           setTimeout(() => location.reload(), 900);
         }

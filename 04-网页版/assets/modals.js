@@ -2638,8 +2638,9 @@ async function importPack() {
         toast('正在导入…', '');
         const res = await window.desktop.flpack.import({ path: r.path, password: r.__pw || '' });
         if (!res.ok) return toast('导入失败：' + res.error, 'err');
-        logAction('导入', { module: '数据', target: '账套包', after: res.companies + ' 家公司 / ' + res.files + ' 个附件' });
-        saveDB();
+        /* 主进程 flpack.applyImport 已经把账套写盘（含回滚保护）。这里绝不能 saveDB()：
+           此时内存 DB 还是「导入前的旧数据」，saveDB 会把它写回磁盘，覆盖掉刚导入的账套——
+           这就是「提示导入成功、数据却还是旧的」的根因。直接 reload，让 boot 重新 loadDB 读新数据。 */
         toast('导入成功，正在重新加载…', 'ok');
         setTimeout(() => location.reload(), 900);
       }
