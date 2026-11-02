@@ -5,7 +5,7 @@
 
 'use strict';
 
-const APP_VERSION = '5.5.8';
+const APP_VERSION = '5.5.9';
 const APP_NAME = '合资金账';
 const APP_NAME_EN = 'FundMerge';
 const STORE_KEY = 'fund-ledger-v2';
@@ -16,6 +16,7 @@ let APP_INFO = null;
 
 /* 版本更新历史（设置页「更新历史」卡片逐条展示） */
 const CHANGELOG = [
+  { v: '5.5.9', date: '2026-11-02', items: ['10 个列表支持多选批量删除（流水/往来款/账户/分类/用户/公司/往来单位/借支/票据/项目）', '表头全选、已选计数、二次确认，不可删除的记录自动跳过并说明原因'] },
   { v: '5.5.8', date: '2026-11-01', items: ['修复账套包导入后账本数据未变化的缺陷（旧数据覆盖导入结果）', '修复云盘恢复同类覆盖问题', '免安装版新增「升级前备份 data 目录」提示'] },
   { v: '5.5.5', date: '2026-10-31', items: ['设置页新增「更新历史」卡片，可随时查看历次版本', '重新设计软件图标，贴合资金管理用途', '重写操作手册，覆盖每个页面与每条业务流程', '新增面向非技术人员的通俗总结报告'] },
   { v: '5.5.4', date: '2026-10-31', items: ['修复二次确认后弹窗不自动关闭的问题', '补全全部数据项的计算逻辑来源文档'] },
@@ -477,8 +478,39 @@ let UI = {
   fbPreset: 'year',
   fbLive: true,
   /* 流向明细页的筛选条件（由看板卡片/丝带/节点点击写入） */
-  flowDetail: { scope: 'all', from: '', to: '', company: '', month: '', kind: '' }
+  flowDetail: { scope: 'all', from: '', to: '', company: '', month: '', kind: '' },
+  /* 多选删除：key = 列表标识（tx / debt / acc / cat / user / company / party / advance / invoice / project） */
+  sel: {}
 };
+
+/* ---------------------------- 多选删除：选中状态 ---------------------------- */
+/* 只存 id，不存行对象——列表重渲染后旧行对象会失效，id 永远有效。
+   切换页面 / 筛选 / 切公司时由调用方清空，避免「删到看不见的旧记录」。 */
+function selSet(scope) {
+  if (!UI.sel) UI.sel = {};
+  if (!(UI.sel[scope] instanceof Set)) UI.sel[scope] = new Set();
+  return UI.sel[scope];
+}
+function selHas(scope, id) { return selSet(scope).has(id); }
+function selToggle(scope, id, on) {
+  const s = selSet(scope);
+  if (on) s.add(id); else s.delete(id);
+  return s.size;
+}
+function selClear(scope) { if (scope) selSet(scope).clear(); else UI.sel = {}; }
+function selCount(scope) { return selSet(scope).size; }
+/* 只保留当前列表里还存在的 id（筛选变化后剔除已不可见的选中项） */
+function selPrune(scope, validIds) {
+  const s = selSet(scope);
+  const keep = new Set(validIds);
+  [...s].forEach(id => { if (!keep.has(id)) s.delete(id); });
+  return s.size;
+}
+/* 清空除指定 scope 外的所有选中（切页时用，避免上一个页面的选中残留） */
+function selKeepOnly(scope) {
+  if (!UI.sel) return;
+  Object.keys(UI.sel).forEach(k => { if (k !== scope) UI.sel[k] = new Set(); });
+}
 
 function defaultDB() {
   const co = newCompany('我的公司');

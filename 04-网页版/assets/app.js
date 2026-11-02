@@ -279,6 +279,10 @@ function renderView() {
   if (!can('view')) return;
   if ((UI.view === 'users' || UI.view === 'categories') && !isAdmin()) UI.view = 'dashboard';
 
+  /* 任何整页重绘（切页 / 改筛选 / 切公司 / 删除后）都重置多选：
+     否则会残留「已经看不见的行」的选中，批量删除时误删。勾选本身不触发重绘。 */
+  selClear();
+
   const root = $('#view-root');
   if (!root) return renderShell();
 
@@ -1247,6 +1251,156 @@ function openCompanyPickerForTx(anchor) {
   showPopover(anchor, html, { width: 270 });
 }
 
+/* ============================================================================
+   多选删除：各模块的纯删除逻辑
+   ----------------------------------------------------------------------------
+   返回 { ok, msg }；不弹窗、不渲染、不 saveDB —— 由调用方统一收尾。
+   批量删除逐条调用；单条删除的二次确认框也复用它，保证两处口径一致。
+   msg 是「跳过原因」，会汇总后提示用户（如已被流水使用的分类只能停用）。
+   ========================================================================== */
+const BULK_LABEL = {
+  tx: '流水', debt: '往来款', acc: '账户', cat: '分类', user: '用户',
+  company: '公司', party: '往来单位', advance: '借支', invoice: '票据', project: '项目'
+};
+
+const DEL_CORE = {
+  /* 流水：仅管理员；票据自动分录必须回票据页处理 */
+  tx(id) {
+    if (!isAdmin()) return { ok: false, msg: '仅管理员可删除流水' };
+    const t = DB.transactions.find(x => x.id === id);
+    if (!t) return { ok: false, msg: '记录已不存在' };
+    if (isInvoiceTx(t)) return { ok: false, msg: '票据自动生成的流水需到票据页处理' };
+    logAction('删除', {
+      module: '流水', target: `${t.category || t.type} ${fmt(t.amount)}`, targetId: id,
+      before: `${t.date} ${t.category} ${fmt(t.amount)} ${t.summary || ''}`
+    });
+    removeLinkedTx(t);
+    DB.transactions = DB.transactions.filter(x => x.id !== id);
+    return { ok: true };
+  },
+
+  /* 往来款：连带删除分期结清记录 */
+  debt(id) {
+    const d = DB.debts.find(x => x.id === id);
+    if (!d) return { ok: false, msg: '记录已不存在' };
+    DB.debts = DB.debts.filter(x => x.id !== id);
+    DB.settlements = DB.settlements.filter(s => s.debtId !== id);
+    return { ok: true };
+  },
+
+  /* 账户：系统账户、已有流水的账户都不能删 */
+  acc(id) {
+    const a = accById(id);
+    if (!a) return { ok: false, msg: '记录已不存在' };
+    if (isSystemAcc(a)) return { ok: false, msg: '系统账户不可删除' };
+    if (DB.transactions.some(t => t.accountId === a.id || t.toAccountId === a.id)) {
+      return { ok: false, msg: '账户已有流水（可单独改为停用）' };
+    }
+    DB.accounts = DB.accounts.filter(x => x.id !== a.id);
+    return { ok: true };
+  },
+
+  /* 分类：已被流水使用的只能停用，不在这里删除 */
+  cat(id) {
+    const c = catById(id);
+    if (!c) return { ok: false, msg: '记录已不存在' };
+    if (DB.transactions.some(t => t.categoryId === c.id)) {
+      return { ok: false, msg: '分类已被流水使用（需单独停用）' };
+    }
+    DB.categories = DB.categories.filter(x => x.id !== c.id);
+    return { ok: true };
+  },
+
+  /* 用户：内置管理员、当前登录账号、最后一个管理员都不能删 */
+  user(id) {
+    const target = DB.users.find(u => u.id === id);
+    if (target && target.builtin) return { ok: false, msg: '内置管理员不可删除' };
+    const u = userById(id);
+    if (!u) return { ok: false, msg: '记录已不存在' };
+    if (u.id === SESSION.id) return { ok: false, msg: '不能删除当前登录账号' };
+    if (u.role === 'admin' && DB.users.filter(x => x.role === 'admin' && x.active !== false).length <= 1) {
+      return { ok: false, msg: '至少要保留一个管理员' };
+    }
+    DB.users = DB.users.filter(x => x.id !== u.id);
+    return { ok: true };
+  },
+
+  /* 公司：至少保留一家；删除当前公司要切换 activeCompany */
+  company(id) {
+    const c = coById(id);
+    if (!c) return { ok: false, msg: '记录已不存在' };
+    if (DB.companies.length <= 1) return { ok: false, msg: '至少保留一家公司' };
+    DB.companies = DB.companies.filter(x => x.id !== id);
+    if (DB.meta.activeCompanyId === id) {
+      DB.meta.activeCompanyId = DB.companies[0].id;
+      COMPANY = DB.companies[0];
+    }
+    if (DESKTOP && window.desktop.files) window.desktop.files.removeCompany(id);
+    return { ok: true };
+  },
+
+  /* 往来单位：已有流水的只能停用 */
+  party(id) {
+    const p = partyById(id);
+    if (!p) return { ok: false, msg: '记录已不存在' };
+    const used = COMPANY.transactions.filter(t => t.partyId === p.id).length;
+    if (used) return { ok: false, msg: '单位已有流水（可单独停用）' };
+    COMPANY.parties = ensurePartyList(COMPANY).filter(x => x.id !== p.id);
+    return { ok: true };
+  },
+
+  /* 借支：直接删，已生成的流水不自动删（与原单条删除一致） */
+  advance(id) {
+    const adv = ensureAdvanceList(COMPANY).find(x => x.id === id);
+    if (!adv) return { ok: false, msg: '记录已不存在' };
+    COMPANY.advances = ensureAdvanceList(COMPANY).filter(x => x.id !== id);
+    return { ok: true };
+  },
+
+  /* 票据：已报账的先撤销；删除时冲销它产生的全部流水 */
+  invoice(id) {
+    const inv = ensureInvoiceList(COMPANY).find(x => x.id === id);
+    if (!inv) return { ok: false, msg: '记录已不存在' };
+    if (inv.form === 'reported') return { ok: false, msg: '票据已报账（需先撤销报账）' };
+    const undone = removeInvoicePostings(inv);
+    logAction('删除', {
+      module: '档案', target: '票据 ' + inv.party, targetId: id,
+      before: `形态 ${INVOICE_FORM[inv.form] || '未报账'}，关联流水 ${undone} 笔`, after: ''
+    });
+    COMPANY.invoices = ensureInvoiceList(COMPANY).filter(x => x.id !== id);
+    return { ok: true };
+  },
+
+  /* 项目：已有流水的不允许删 */
+  project(id) {
+    const pj = projectById(id);
+    if (!pj) return { ok: false, msg: '记录已不存在' };
+    const used = projectUsage(pj.id).count;
+    if (used) return { ok: false, msg: '项目已有流水' };
+    logAction('删除', { module: '档案', target: '项目 ' + pj.name, targetId: pj.id });
+    COMPANY.projects = ensureProjectList(COMPANY).filter(x => x.id !== pj.id);
+    return { ok: true };
+  }
+};
+
+/* 批量栏计数 / 按钮状态 / 全选框：只改这几处 DOM，不整页重绘 —— 重绘会打断连续勾选 */
+function updateBulkBar(scope) {
+  const n = selCount(scope);
+  document.querySelectorAll(`.bulk-bar[data-bulk="${scope}"]`).forEach(bar => {
+    const b = bar.querySelector('.bulk-info b');
+    if (b) b.textContent = n;
+    const btn = bar.querySelector('[data-action="bulk-del"]');
+    if (btn) btn.disabled = n === 0;
+  });
+  const all = document.querySelector(`input[data-sel-all="${scope}"]`);
+  if (all) {
+    const boxes = [...document.querySelectorAll(`input[data-sel="${scope}"]:not(:disabled)`)];
+    const on = boxes.filter(cb => cb.checked).length;
+    all.checked = boxes.length > 0 && on === boxes.length;
+    all.indeterminate = on > 0 && on < boxes.length;
+  }
+}
+
 /* --------------------------------- 事件 ---------------------------------- */
 
 /* 往来单位 / 凭证筛选 */
@@ -1288,6 +1442,37 @@ document.addEventListener('change', e => {
   if (!el || el.tagName !== 'INPUT' || el.type !== 'checkbox') return;
   if (el.dataset.action === 'toggle-motion') setMotion(el.checked);
   if (el.dataset.action === 'toggle-fx') setFX(el.checked);
+});
+
+/* 多选删除：行复选框 / 表头全选
+   只更新选中集合与局部 DOM（批量栏计数、行底色、全选框状态），不整页重绘——
+   重绘会把正在勾选的行替换掉，连续勾选会中断。 */
+document.addEventListener('change', e => {
+  const t = e.target;
+  if (!t || t.tagName !== 'INPUT' || t.type !== 'checkbox') return;
+
+  /* 表头全选：只作用于当前页可见、且未禁用的行 */
+  if (t.dataset.selAll) {
+    const scope = t.dataset.selAll;
+    const on = t.checked;
+    document.querySelectorAll(`input[data-sel="${scope}"]:not(:disabled)`).forEach(cb => {
+      cb.checked = on;
+      selToggle(scope, cb.dataset.id, on);
+      const tr = cb.closest('tr');
+      if (tr) tr.classList.toggle('is-selected', on);
+    });
+    updateBulkBar(scope);
+    return;
+  }
+
+  /* 单行勾选 */
+  if (t.dataset.sel) {
+    const scope = t.dataset.sel;
+    selToggle(scope, t.dataset.id, t.checked);
+    const tr = t.closest('tr');
+    if (tr) tr.classList.toggle('is-selected', t.checked);
+    updateBulkBar(scope);
+  }
 });
 
 /* 可访问性增强：重绘后调用，幂等、不动布局、不改视觉
@@ -1429,6 +1614,41 @@ document.addEventListener('click', async e => {
       openTxModal(id);
       break;
     }
+    /* ---------- 多选批量删除：逐条调用 DEL_CORE，汇总跳过原因 ---------- */
+    case 'bulk-del': {
+      const scope = el.dataset.scope;
+      const ids = [...selSet(scope)];
+      if (!ids.length) return;
+      const label = BULK_LABEL[scope] || '记录';
+      confirmDialog({
+        title: `批量删除 ${ids.length} 条${label}？`,
+        requireCode: true,
+        message: `将删除已选中的 <b>${ids.length}</b> 条${label}。删除后相关余额与报表会同步变化，此操作不可撤销。<br><br>若其中有不可删除的记录（例如已被流水使用、或系统账户），会自动跳过并告知原因。`,
+        confirmText: `删除 ${ids.length} 条`,
+        onConfirm: () => {
+          let ok = 0;
+          const skip = [];
+          ids.forEach(id => {
+            let r;
+            try { r = DEL_CORE[scope](id); }
+            catch (err) { r = { ok: false, msg: err.message }; }
+            if (r && r.ok) ok++;
+            else skip.push((r && r.msg) || '未知原因');
+          });
+          selClear(scope);
+          saveDB();
+          closeModal();
+          if (scope === 'company') renderShell(); else render();
+          if (!ok) return toast('没有可删除的记录：' + (skip[0] || '未知原因'), 'err');
+          const uniq = [...new Set(skip)];
+          toast(`已删除 ${ok} 条${label}` + (skip.length
+            ? `，跳过 ${skip.length} 条（${uniq.slice(0, 2).join('；')}${uniq.length > 2 ? ' 等' : ''}）`
+            : ''), skip.length ? '' : 'ok');
+        }
+      });
+      break;
+    }
+
     case 'del-tx': {
       if (!isAdmin()) return toast('仅管理员可删除流水', 'err');
       const t = DB.transactions.find(x => x.id === id);

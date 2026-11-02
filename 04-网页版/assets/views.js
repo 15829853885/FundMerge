@@ -30,6 +30,32 @@ function emptyState({ ico = 'info', title, desc, actions = '' }) {
   </div>`;
 }
 
+/* ============================================================================
+   多选删除：视图辅助
+   ----------------------------------------------------------------------------
+   scope 与 UI.sel 的 key 一致（tx / debt / acc / cat / user / company / party /
+   advance / invoice / project）。每个列表：表头一列全选、每行一列复选框、
+   列表上方一条批量栏。
+   注意：勾选时不整页重绘（否则正在勾的行会被替换、连选中断），只由 app.js 局部更新
+   批量栏计数与按钮状态。
+   ========================================================================== */
+function selTh(scope) {
+  return `<th class="sel-col no-print"><input type="checkbox" data-sel-all="${scope}" title="全选本页" aria-label="全选本页"></th>`;
+}
+function selTd(scope, id, opts = {}) {
+  const dis = opts.disabled ? ' disabled' : '';
+  const tip = opts.title ? ` title="${esc(opts.title)}"` : '';
+  return `<td class="sel-col no-print"><input type="checkbox" data-sel="${scope}" data-id="${esc(id)}"${dis}${tip}></td>`;
+}
+/* 批量栏：卡片标题行右侧或列表上方。N=0 时按钮禁用 */
+function bulkBar(scope, label) {
+  const n = selCount(scope);
+  return `<div class="bulk-bar no-print" data-bulk="${scope}">
+    <span class="bulk-info">已选 <b>${n}</b> 条${label ? `<span class="bulk-label"> · ${esc(label)}</span>` : ''}</span>
+    <button class="btn danger sm" data-action="bulk-del" data-scope="${scope}" ${n ? '' : 'disabled'}>${icon('trash', 13)} 批量删除</button>
+  </div>`;
+}
+
 /* 台账通用筛选栏（G-04）
    key 用于 data-f 前缀（debt / advance / invoice），state 为该页的筛选状态对象 */
 function filterBar(key, fields, state) {
@@ -605,10 +631,11 @@ function txAreaHTML() {
       <div class="item"><span>支出合计</span><strong class="out">${fmt(outflow)}</strong></div>
       <div class="item"><span>净额</span><strong style="color:${inflow - outflow >= 0 ? 'var(--in)' : 'var(--out)'}">${fmt(inflow - outflow)}</strong></div>
     </div>
+    ${bulkBar('tx')}
     <div class="table-wrap">
       <table class="tbl">
         <thead><tr>
-          <th style="width:100px">日期</th><th style="width:150px">分类</th><th>账户</th>
+          ${selTh('tx')}<th style="width:100px">日期</th><th style="width:150px">分类</th><th>账户</th>
           <th>摘要</th><th class="tr" style="width:130px">金额</th><th style="width:100px">经办人</th><th style="width:76px"></th>
         </tr></thead>
         <tbody>${rows.map(t => {
@@ -616,6 +643,7 @@ function txAreaHTML() {
           const sign = t.type === 'in' ? '+' : t.type === 'out' ? '-' : '';
           const cls = t.type === 'in' ? 'in' : t.type === 'out' ? 'out' : 'move';
           return `<tr>
+            ${selTd('tx', t.id, isInvoiceTx(t) ? { disabled: true, title: '票据自动生成的流水不可删除，请到票据页处理' } : {})}
             <td class="num nowrap" style="color:var(--muted)">${t.date}</td>
             <td>${catChip(c)}</td>
             <td class="nowrap" style="color:var(--ink-3);font-size:12.5px">
@@ -718,14 +746,16 @@ function viewDebts() {
       </div>
     </div>
     <div class="card-bd flush">
+      ${bulkBar('debt')}
       ${list.length ? `<div class="table-wrap">
         <table class="tbl">
           <thead><tr>
-            <th>对方</th><th class="tr" style="width:120px">金额</th><th class="tr" style="width:120px">已结</th>
+            ${selTh('debt')}<th>对方</th><th class="tr" style="width:120px">金额</th><th class="tr" style="width:120px">已结</th>
             <th class="tr" style="width:120px">未结</th><th style="width:110px">发生日期</th><th style="width:120px">约定结清</th>
             <th style="width:100px">状态</th><th style="width:110px"></th>
           </tr></thead>
           <tbody>${list.map(({ d, info }) => `<tr>
+            ${selTd('debt', d.id)}
             <td>
               <div class="cell-main">${esc(d.party)}</div>
               <div class="cell-sub">${esc(d.note || '—')}</div>
@@ -1336,10 +1366,11 @@ function viewAccounts() {
       <div><div class="card-title">账户列表</div><div class="card-sub">期初余额 + 收入 − 支出 ± 内部转账 = 当前余额</div></div>
       <div class="card-actions"><button class="btn primary sm" data-action="new-acc">${icon('plus', 14)} 新增账户</button></div>
     </div>
+    ${bulkBar('acc')}
     <div class="table-wrap">
       <table class="tbl">
         <thead><tr>
-          <th>账户</th><th style="width:76px">类型</th><th>开户行 / 账号</th>
+          ${selTh('acc')}<th>账户</th><th style="width:76px">类型</th><th>开户行 / 账号</th>
           <th class="tr" style="width:120px">期初余额</th>
           <th class="tr" style="width:110px">本年流入</th>
           <th class="tr" style="width:110px">本年流出</th>
@@ -1351,6 +1382,7 @@ function viewAccounts() {
           const hasTx = DB.transactions.some(t => t.accountId === a.id || t.toAccountId === a.id);
           const sys = isSystemAcc(a);
           return `<tr${sys ? ' style="background:var(--surface-2)"' : ''}>
+            ${selTd('acc', a.id, (sys || hasTx) ? { disabled: true, title: sys ? '系统账户由票据自动维护，不可删除' : '账户已有流水，不能删除（可改为停用）' } : {})}
             <td>
               <div style="display:flex;align-items:center;gap:9px">
                 <span class="acct-ico ${a.type === 'cash' ? 'cash' : ''}" style="width:28px;height:28px;border-radius:8px">${icon(sys ? 'receipt' : a.type === 'cash' ? 'wallet' : 'bank', 14)}</span>
@@ -1423,11 +1455,13 @@ function viewCategories() {
           <div><div class="card-title">${g.label}</div><div class="card-sub">${g.desc}</div></div>
           <div class="card-actions"><button class="btn secondary sm" data-action="new-cat" data-kind="${g.kind}">${icon('plus', 13)} 新建</button></div>
         </div>
+        ${bulkBar('cat')}
         <div class="card-bd flush">
           <div class="table-wrap">
             <table class="tbl">
-              <thead><tr><th>分类</th><th style="width:196px">现金流量项目</th><th class="tr" style="width:70px">笔数</th><th style="width:70px"></th></tr></thead>
+              <thead><tr>${selTh('cat')}<th>分类</th><th style="width:196px">现金流量项目</th><th class="tr" style="width:70px">笔数</th><th style="width:70px"></th></tr></thead>
               <tbody>${list.map(c => `<tr style="${c.active === false ? 'opacity:.5' : ''}">
+                ${selTd('cat', c.id)}
                 <td>
                   <div style="display:flex;align-items:center;gap:9px">
                     <span class="cat-ico" style="--c:${c.color}">${icon(c.icon, 13)}</span>
@@ -1467,6 +1501,7 @@ function viewUsers() {
   const rows = DB.users.map(u => {
     const txCount = DB.transactions.filter(t => t.userId === u.id).length;
     return `<tr>
+      ${selTd('user', u.id || '', (u.builtin || (u.id && u.id === SESSION.id)) ? { disabled: true, title: u.builtin ? '内置管理员不可删除' : '不能删除当前登录账号' } : {})}
       <td>
         <div class="user-cell">
           ${avatarHTML(u.displayName)}
@@ -1497,9 +1532,10 @@ function viewUsers() {
       <div><div class="card-title">用户与权限</div><div class="card-sub">管理员可管理账户、分类与全部数据；记账员只能录入和查看；查看员只读</div></div>
       <div class="card-actions"><button class="btn primary sm" data-action="new-user">${icon('userPlus', 14)} 新增用户</button></div>
     </div>
+    ${bulkBar('user')}
     <div class="table-wrap">
       <table class="tbl">
-        <thead><tr><th>用户</th><th style="width:100px">角色</th><th style="width:90px">状态</th><th style="width:90px">录入流水</th><th style="width:150px">最后登录</th><th style="width:110px"></th></tr></thead>
+        <thead><tr>${selTh('user')}<th>用户</th><th style="width:100px">角色</th><th style="width:90px">状态</th><th style="width:90px">录入流水</th><th style="width:150px">最后登录</th><th style="width:110px"></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -2900,14 +2936,16 @@ function viewCompanies() {
       <div><div class="card-title">公司列表</div><div class="card-sub">每家公司的账户、流水、往来与预算完全独立，集团视图只做合并汇总</div></div>
       <div class="card-actions"><button class="btn primary sm" data-action="new-company">${icon('plus', 14)} 新建公司</button></div>
     </div>
+    ${bulkBar('company')}
     <div class="table-wrap">
       <table class="tbl">
         <thead><tr>
-          <th>公司</th><th class="tr" style="width:120px">资金总额</th><th class="tr" style="width:100px">现金</th>
+          ${selTh('company')}<th>公司</th><th class="tr" style="width:120px">资金总额</th><th class="tr" style="width:100px">现金</th>
           <th class="tr" style="width:100px">银行</th><th class="tr" style="width:100px">应收</th><th class="tr" style="width:100px">应付</th>
           <th style="width:110px">账本</th><th style="width:130px"></th>
         </tr></thead>
         <tbody>${rows.map(({ co, t, lend, pay }) => `<tr>
+          ${selTd('company', co.id, DB.companies.length <= 1 ? { disabled: true, title: '至少保留一家公司' } : {})}
           <td>
             <div style="display:flex;align-items:center;gap:9px">
               <span class="co-badge sm" style="--c:${co.color}">${esc(initials(co.name))}</span>
@@ -2932,6 +2970,7 @@ function viewCompanies() {
           </td>
         </tr>`).join('')}</tbody>
         <tfoot><tr>
+          <td></td>
           <td>集团合计${hqEx ? '（不含总公司自身）' : ''}</td>
           <td class="tr num">${sumOf('total')}</td>
           <td class="tr num">${sumOf('cash')}</td>
@@ -3274,6 +3313,7 @@ function viewParties() {
   const rows = list.map(p => {
     const txCount = COMPANY.transactions.filter(t => t.partyId === p.id).length;
     return `<tr>
+      ${selTd('party', p.id, txCount ? { disabled: true, title: '该单位已有流水，只能停用' } : {})}
       <td><div class="cell-main">${esc(p.name)}</div><div class="cell-sub">${esc(p.note || '—')}</div></td>
       <td><span class="pill muted">${PARTY_TYPES[p.type] || '其他'}</span></td>
       <td class="nowrap">${esc(p.contact || '—')}</td>
@@ -3313,9 +3353,10 @@ function viewParties() {
   </div>
   <div class="card">
     <div class="card-hd"><div><div class="card-title">共 ${list.length} 个单位</div><div class="card-sub">停用不影响历史流水</div></div></div>
+    ${bulkBar('party')}
     <div class="card-bd flush">
       ${rows ? `<div class="table-wrap"><table class="tbl">
-        <thead><tr><th>名称</th><th style="width:80px">类型</th><th style="width:100px">联系人</th>
+        <thead><tr>${selTh('party')}<th>名称</th><th style="width:80px">类型</th><th style="width:100px">联系人</th>
           <th style="width:130px">电话</th><th style="width:140px">税号</th><th class="tr" style="width:70px">流水</th>
           <th style="width:80px">状态</th><th style="width:110px">操作</th></tr></thead>
         <tbody>${rows}</tbody></table></div>`
@@ -3404,6 +3445,7 @@ function viewAdvances() {
   const rows = list.map(a => {
     const i = advanceInfo(a);
     return `<tr>
+      ${selTd('advance', a.id)}
       <td class="nowrap">${esc(a.userName)}</td>
       <td class="num nowrap">${a.date}</td>
       <td class="tr">${fmt(a.amount)}</td>
@@ -3444,9 +3486,10 @@ function viewAdvances() {
     { k: 'kw', t: 'text', label: '员工 / 事由', ph: '输入关键字' }
   ], fs)}
   <div class="card">
+    ${bulkBar('advance')}
     <div class="card-bd flush">
       ${rows ? `<div class="table-wrap"><table class="tbl">
-        <thead><tr><th>员工</th><th style="width:100px">日期</th><th class="tr" style="width:110px">借支金额</th>
+        <thead><tr>${selTh('advance')}<th>员工</th><th style="width:100px">日期</th><th class="tr" style="width:110px">借支金额</th>
           <th class="tr" style="width:110px">已用</th><th class="tr" style="width:110px">余额</th><th style="width:90px">状态</th>
           <th>事由</th><th style="width:140px">操作</th></tr></thead>
         <tbody>${rows}</tbody></table></div>`
@@ -3486,6 +3529,7 @@ function viewInvoices() {
     const od = invoiceOverdue(i);
     const reported = i.form === 'reported';
     return `<tr data-inv-row="${i.id}"${UI.invoiceFocus === i.id ? ' class="is-focus-row"' : ''}${reported ? ' style="opacity:.72"' : ''}>
+      ${selTd('invoice', i.id, reported ? { disabled: true, title: '已报账，需先撤销报账' } : {})}
       <td class="num nowrap">${i.payDate || '—'}</td>
       <td>${esc(i.party || '—')}</td>
       <td class="tr">${fmt(i.amount)}</td>
@@ -3532,9 +3576,10 @@ function viewInvoices() {
     { k: 'kw', t: 'text', label: '对方 / 票号', ph: '输入关键字' }
   ], fs)}
   <div class="card">
+    ${bulkBar('invoice')}
     <div class="card-bd flush">
       ${rows ? `<div class="table-wrap"><table class="tbl">
-        <thead><tr><th style="width:104px">付款日期</th><th>往来单位</th><th class="tr" style="width:104px">金额</th>
+        <thead><tr>${selTh('invoice')}<th style="width:104px">付款日期</th><th>往来单位</th><th class="tr" style="width:104px">金额</th>
           <th style="width:104px">付款账户</th><th style="width:104px">回票日</th><th style="width:84px">状态</th>
           <th style="width:84px">形态</th><th style="width:64px">提醒</th><th style="width:210px">操作</th></tr></thead>
         <tbody>${rows}</tbody></table></div>`
@@ -3558,6 +3603,7 @@ function viewProjects() {
     const rate = budget > 0 ? Math.min(999, Math.round(u.out / budget * 100)) : 0;
     const over = budget > 0 && u.out > budget;
     return `<tr>
+      ${selTd('project', p.id, u.count ? { disabled: true, title: '项目已有流水，不能删除' } : {})}
       <td><div class="cell-main">${esc(p.name)}</div><div class="cell-sub">${esc(p.code || '—')}</div></td>
       <td><span class="pill ${p.status === 'done' ? 'muted' : p.status === 'paused' ? 'warn' : 'ok'}">${PROJECT_STATUS[p.status] || '进行中'}</span></td>
       <td class="tr">${budget ? fmt(budget) : '—'}</td>
@@ -3592,9 +3638,10 @@ function viewProjects() {
       <div class="stat-value sm">${list.filter(p => (p.status || 'active') === 'active').length}</div><div class="stat-foot">含暂停 ${list.filter(p => p.status === 'paused').length}</div></div>
   </div>
   <div class="card">
+    ${bulkBar('project')}
     <div class="card-bd flush">
       ${rows ? `<div class="table-wrap"><table class="tbl">
-        <thead><tr><th>项目</th><th style="width:80px">状态</th><th class="tr" style="width:110px">预算</th>
+        <thead><tr>${selTh('project')}<th>项目</th><th style="width:80px">状态</th><th class="tr" style="width:110px">预算</th>
           <th class="tr" style="width:110px">已支出</th><th class="tr" style="width:110px">剩余</th>
           <th style="width:150px">执行率</th><th class="tr" style="width:60px">笔数</th><th style="width:80px">操作</th></tr></thead>
         <tbody>${rows}</tbody></table></div>`
